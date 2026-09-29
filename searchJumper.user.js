@@ -5,11 +5,11 @@
 // @name:ja      SearchJumper
 // @name:ru      SearchJumper
 // @namespace    hoothin
-// @version      1.7.92
-// @description  Conduct searches for selected text/image effortlessly. Navigate to any search engine(Google/Bing/Custom) swiftly.
-// @description:zh-CN  万能聚合搜索，一键切换任何搜索引擎(百度/必应/谷歌等)，支持划词右键搜索、页内关键词查找与高亮、可视化操作模拟、高级自定义等
-// @description:zh-TW  一鍵切換任意搜尋引擎，支援劃詞右鍵搜尋、頁內關鍵詞查找與高亮、可視化操作模擬、高級自定義等
-// @description:ja  任意の検索エンジンにすばやく簡単にジャンプします！
+// @version      1.9.33
+// @description  Instantly search selected text across multiple search engines. Highlight keywords and boost your research efficiency.
+// @description:zh-CN  一键即时搜索选定文本或在多个搜索引擎之间快速切换，支持关键词高亮、拖拽搜索、以图搜图、页内查找与自定义引擎。
+// @description:zh-TW  一鍵即時搜尋選定文字或在多個搜尋引擎之間快速切換，支援關鍵字高亮、拖曳搜尋、以圖搜圖、頁內尋找與自訂引擎。
+// @description:ja  選択したテキストをワンクリックで即座に検索したり、キーワードの強調表示、ドラッグアンドドロップ検索、画像検索、ページ内検索、カスタムエンジンをサポートする複数の検索エンジン間で素早く切り替えたりできます。
 // @description:ru  Легко проводите поиск по выбранному тексту/изображению/ссылке. Быстро переходите к любому поисковому движку. Выделяйте искомый текст.
 // @author       hoothin
 // @license      MPL-2.0
@@ -58,17 +58,49 @@
 // @run-at       document-start
 // ==/UserScript==
 
-(function() {
+(async function() {
     'use strict';
     const ext = false;
+    const extensionApi = ext && (globalThis.browser || chrome);
     const _unsafeWindow = (typeof unsafeWindow == 'undefined') ? window : unsafeWindow;
     if (_unsafeWindow.searchJumperInited) return;
     _unsafeWindow.searchJumperInited = true;
-    if (window.name === 'pagetual-iframe' || (window.frameElement && window.frameElement.name === 'pagetual-iframe')) return;
+    const clipboard = navigator && navigator.clipboard;
     const inIframe = window.top !== window.self;
-    if (inIframe) {
+    const splitEnabled = ext && chrome.runtime.getManifest().permissions.some(permission =>
+        permission === 'declarativeNetRequestWithHostAccess' || permission === 'webRequestBlocking');
+    const isSplitPage = splitEnabled && location.href.split(/[?#]/)[0] === chrome.runtime.getURL('split/index.html');
+    let splitFrame = null;
+    const splitFrameAdapter = ext && globalThis.searchJumperSplitFrame;
+    if (splitEnabled && inIframe && window.name.startsWith('sj-split-')) {
         try {
-            if (window.self.innerWidth < 300 || window.self.innerHeight < 300) {
+            splitFrame = await extensionApi.runtime.sendMessage({action: 'splitFrameHello', paneId: window.name.slice(9),
+                ...splitFrameAdapter?.identity});
+            if (splitFrame?.ok) {
+                if (splitFrameAdapter) await splitFrameAdapter.confirmed();
+                else window.postMessage({
+                    action: 'searchjumper-split-worker', paneId: splitFrame.paneId,
+                    parentOrigin: chrome.runtime.getURL('').slice(0, -1)
+                }, location.origin);
+            }
+        } catch (error) {
+            console.warn('SearchJumper split frame:', error);
+        }
+    }
+    if (inIframe && !splitFrame?.ok) {
+        try {
+            if (window.name === 'pagetual-iframe' || (window.frameElement && window.frameElement.name === 'pagetual-iframe')) {
+                return;
+            } else if (window.self.innerWidth === 0 && window.self.innerHeight === 0) {
+                let ignore = await new Promise(resolve => {
+                    window.addEventListener('load', e => {
+                        setTimeout(() => {
+                            resolve(window.self.innerWidth < 300 || window.self.innerHeight < 300);
+                        }, 500);
+                    });
+                });
+                if (ignore) return;
+            } else if (window.self.innerWidth < 300 || window.self.innerHeight < 300) {
                 return;
             }
         } catch(e) {
@@ -77,8 +109,10 @@
     }
     const importPageReg = /^https:\/\/github\.com\/hoothin\/SearchJumper(\/(issue|discussions)|\/?$|#|\?)|^https:\/\/greasyfork\.org\/.*\/scripts\/445274[\-\/].*\/discussions/i;
     const mobileUa = "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1";
-    const firstRunPage = "https://search.hoothin.com/firstRun";
-    let configPage = 'https://search.hoothin.com/config/';
+    const homePage = 'https://search.hoothin.com/';
+    const githubPage = 'https://hoothin.github.io/SearchJumper';
+    const firstRunPage = homePage + "firstRun";
+    let configPage = homePage + 'config/';
     let isAllPage = false;
 
     let searchData = {};
@@ -142,7 +176,7 @@
         callBarCtrl: false,
         callBarShift: false,
         callBarMeta: false,
-        defaultFindTab: false,
+        defaultFindTab: true,
         disableAutoOpen: false,
         hideOnSearchEngine: false,
         minSizeMode: false,
@@ -175,9 +209,56 @@
                         importOrNot: '是否导入配置？',
                         settings: '配置脚本',
                         batchOpen: '批量打开',
+                        split: {
+                            locale: "zh-CN",
+                            title: "搜索酱 · 分屏搜索",
+                            button: "分屏搜索",
+                            query: "输入关键词或问题，发送到所有窗格",
+                            search: "搜索 / 提问",
+                            layout: "布局",
+                            columns2: "左右双栏",
+                            rows2: "上下双栏",
+                            columns3: "三栏",
+                            columns4: "四栏",
+                            previous: "上一页",
+                            next: "下一页",
+                            refresh: "刷新",
+                            open: "新标签",
+                            close: "关闭",
+                            retry: "重试",
+                            loading: "正在加载…",
+                            running: "正在发送…",
+                            done: "已就绪",
+                            error: "加载失败",
+                            empty: "所有窗格已关闭，可从搜索分组重新发起分屏。",
+                            timeout: "页面尚未就绪，请在新标签页登录，或检查引擎规则后重试。",
+                            skipped: "这些引擎请使用原入口：",
+                            divider: "调整窗格大小",
+                            pages: "翻页",
+                            results: "搜索结果",
+                            ended: "分屏会话无法打开，请从搜索分组重新发起。",
+                            noEngines: "此分组没有可分屏的网页引擎。",
+                            httpOnly: "分屏仅支持不含用户名和密码的 HTTP(S) 网页。",
+                            invalidRequest: "搜索请求无效，请检查引擎规则。",
+                            invalidActions: "自动操作规则无效，请检查引擎规则。",
+                            missingForm: "缺少表单提交地址。",
+                            formMismatch: "表单提交地址与窗格地址不一致。",
+                            unsupportedBrowser: "当前浏览器无法隔离嵌入规则，需要 Chrome 145 或更新版本。",
+                            invalidTab: "分屏标签页无效。",
+                            pageClosed: "分屏页已关闭。",
+                            pageOnly: "只有分屏页可以修改自己的会话。",
+                            invalidSender: "请求不是来自本扩展。",
+                            invalidSearch: "分屏搜索参数无效。",
+                            invalidEngine: "搜索引擎信息无效。",
+                            invalidUpdate: "搜索更新请求无效。",
+                            missingPane: "窗格已关闭。",
+                            unknownCommand: "无法识别分屏操作。",
+                            pageChanged: "页面在确认提交前发生了跳转，请按需重试。"
+                        },
                         batchOpenConfirm: '确定要批量打开吗？',
                         postOver: '发送成功：',
                         postError: '发送失败：',
+                        copyOver: '复制成功',
                         keywords: '请输入搜索词',
                         targetUrl: '请输入搜索URL',
                         siteName: '站名',
@@ -213,7 +294,7 @@
                         recoverBtn: '恢复查找文字',
                         pinBtn: '固定查找文字，在所有标签页中搜索',
                         locBtn: '定位侧边栏',
-                        filterSites: '筛选搜索引擎',
+                        filterSites: '搜索引擎',
                         searchInPage: '页内查找',
                         removeBtn: '移除搜索词',
                         saveRuleBtn: '保存当前站点的搜索词',
@@ -256,6 +337,8 @@
                         submitCrawl: '☑️完成操作',
                         inputOutput: '在元素<span title="#t1#" class="element">#t1#</span>内输入<span title="#t2#">#t2#</span>',
                         clickOutput: '点击元素<span title="#t#" class="element">#t#</span>',
+                        dblclickOutput: '双击元素<span title="#t#" class="element">#t#</span>',
+                        rclickOutput: '右击元素<span title="#t#" class="element">#t#</span>',
                         copyOutput: '复制元素<span title="#t#" class="element">#t#</span>',
                         sleepOutput: '休眠<span title="#t#">#t#</span>毫秒',
                         inputNewValue: '请输入新值',
@@ -299,11 +382,58 @@
                         importOrNot: '是否導入配置？',
                         settings: '配置脚本',
                         batchOpen: '批量打開',
+                        split: {
+                            locale: "zh-TW",
+                            title: "搜尋醬 · 分割畫面搜尋",
+                            button: "分割畫面搜尋",
+                            query: "輸入關鍵字或問題，傳送至所有窗格",
+                            search: "搜尋 / 提問",
+                            layout: "版面配置",
+                            columns2: "左右雙欄",
+                            rows2: "上下雙欄",
+                            columns3: "三欄",
+                            columns4: "四欄",
+                            previous: "上一頁",
+                            next: "下一頁",
+                            refresh: "重新整理",
+                            open: "新分頁",
+                            close: "關閉",
+                            retry: "重試",
+                            loading: "載入中…",
+                            running: "傳送中…",
+                            done: "已就緒",
+                            error: "載入失敗",
+                            empty: "所有窗格已關閉，請從搜尋群組重新啟動分割畫面搜尋。",
+                            timeout: "頁面尚未就緒，請在新分頁登入，或檢查引擎規則後重試。",
+                            skipped: "這些引擎請使用原入口：",
+                            divider: "調整窗格大小",
+                            pages: "換頁",
+                            results: "搜尋結果",
+                            ended: "無法開啟分割畫面工作階段，請從搜尋群組重新啟動。",
+                            noEngines: "此群組沒有可供分割畫面搜尋的網頁引擎。",
+                            httpOnly: "分割畫面僅支援不含使用者名稱與密碼的 HTTP(S) 網頁。",
+                            invalidRequest: "搜尋請求無效，請檢查引擎規則。",
+                            invalidActions: "自動操作規則無效，請檢查引擎規則。",
+                            missingForm: "缺少表單提交網址。",
+                            formMismatch: "表單提交網址與窗格網址不一致。",
+                            unsupportedBrowser: "目前的瀏覽器無法隔離嵌入規則，需要 Chrome 145 或更新版本。",
+                            invalidTab: "分割畫面的分頁無效。",
+                            pageClosed: "分割畫面分頁已關閉。",
+                            pageOnly: "只有分割畫面分頁可以修改自己的工作階段。",
+                            invalidSender: "請求並非來自本擴充功能。",
+                            invalidSearch: "分割畫面搜尋參數無效。",
+                            invalidEngine: "搜尋引擎資訊無效。",
+                            invalidUpdate: "搜尋更新請求無效。",
+                            missingPane: "窗格已關閉。",
+                            unknownCommand: "無法辨識分割畫面操作。",
+                            pageChanged: "頁面在確認提交前已跳轉，請視需要重試。"
+                        },
                         batchOpenConfirm: '確定要批量打開嗎？',
                         postOver: '發送成功：',
                         postError: '發送失敗：',
-                        keywords: '請輸入搜索詞',
-                        targetUrl: '請輸入搜索URL',
+                        copyOver: '複製成功',
+                        keywords: '請輸入搜尋詞',
+                        targetUrl: '請輸入搜尋URL',
                         siteName: '站名',
                         siteDesc: '描述',
                         siteUrl: '地址',
@@ -314,12 +444,12 @@
                         siteType: '分類',
                         siteExist: '已存在相同規則，是否添加為克隆項？',
                         siteAddOver: '站點添加成功',
-                        multiline: '是否以換行符分隔多行搜索？',
-                        multilineTooMuch: '行數超過10行，是否繼續搜索？',
+                        multiline: '是否以換行符分隔多行搜尋？',
+                        multilineTooMuch: '行數超過10行，是否繼續搜尋？',
                         inputPlaceholder: '篩選引擎',
                         inputTitle: '篩選引擎，支援 * ? 通配符，$代表末尾，^代表開頭，分組**站點 可篩選指定分組，例如 圖片**google，tab 下一項',
-                        inputKeywords: '輸入搜索關鍵詞',
-                        inPageTips: '自定義分隔符：$c 加分隔符，例如 $c| search | jumper，默認空格作為分隔符\n原始文本不分隔：$o 加文本，例如$oopai liked by hero\n正則表達式：/re/，例如 $c, /google/i , /aPPle/\n添加提示文本：搜索文本$t{提示文本}，例如 linux$t{linux is not unix}\n添加自定義樣式：搜索文本$s{背景;其他}，例如 google$s{#333333;color:red;}\n左鍵點擊關鍵詞跳轉至下一個，右鍵點擊關鍵詞跳轉至上一個',
+                        inputKeywords: '輸入搜尋關鍵詞',
+                        inPageTips: '自定義分隔符：$c 加分隔符，例如 $c| search | jumper，默認空格作為分隔符\n原始文本不分隔：$o 加文本，例如$oopai liked by hero\n正則表達式：/re/，例如 $c, /google/i , /aPPle/\n添加提示文本：搜尋文本$t{提示文本}，例如 linux$t{linux is not unix}\n添加自定義樣式：搜尋文本$s{背景;其他}，例如 google$s{#333333;color:red;}\n左鍵點擊關鍵詞跳轉至下一個，右鍵點擊關鍵詞跳轉至上一個',
                         inPagePlaceholder: '輸入文字，按下回車進行頁內查找',
                         pickerBtn: '抓取元素',
                         multiPickerBtn: '抓取元素，按住 Ctrl 或 Command 連續抓取',
@@ -335,33 +465,33 @@
                         collapseAll: '全部合起',
                         rename: '重命名',
                         recoverBtn: '恢復查找文字',
-                        pinBtn: '固定查找文字，在所有標籤頁中搜索',
+                        pinBtn: '固定查找文字，在所有標籤頁中搜尋',
                         locBtn: '定位側邊欄',
-                        filterSites: '篩選搜尋引擎',
+                        filterSites: '搜尋引擎',
                         searchInPage: '頁內查找',
-                        removeBtn: '移除搜索詞',
-                        saveRuleBtn: '保存當前站點的搜索詞',
-                        wordContent: '搜索詞內容',
+                        removeBtn: '移除搜尋詞',
+                        saveRuleBtn: '保存當前站點的搜尋詞',
+                        wordContent: '搜尋詞內容',
                         wordHide: '隱藏父級元素',
                         wordHideTips: '元素深度，0為當前父級',
-                        wordStyle: '搜索詞樣式',
-                        wordTitle: '搜索詞注釋',
+                        wordStyle: '搜尋詞樣式',
+                        wordTitle: '搜尋詞注釋',
                         re: '正則',
                         ignoreCase: '不區分大小寫',
                         filterLink: '篩選鏈接',
                         modify: '修改',
                         cancel: '取消',
-                        modifyWord: '修改頁內搜索詞',
+                        modifyWord: '修改頁內搜尋詞',
                         addSearchEngine: '添加搜尋引擎',
                         noValidItemAsk: '未找到有效元素，是否手動編輯規則並添加？',
                         expand: '展開剩餘站點',
                         add: '添加',
                         addWord: '添加新詞語',
                         wordRange: '生效範圍',
-                        customInputFrame: '自定義搜索參數',
-                        customSubmit: '提交搜索',
+                        customInputFrame: '自定義搜尋參數',
+                        customSubmit: '提交搜尋',
                         finalSearch: '目標搜尋字串',
-                        search: '搜索此項',
+                        search: '搜尋此項',
                         siteKeywords: '關鍵詞(多個關鍵詞以|分隔)',
                         siteMatch: '站點 URL 匹配正則',
                         openSelect: '打開選項',
@@ -372,7 +502,7 @@
                         maxAddSiteBtn: '最大化',
                         minAddSiteBtn: '還原',
                         addAction: '添加操作',
-                        crawlInfo: '模擬輸入搜索',
+                        crawlInfo: '模擬輸入搜尋',
                         inputAction: '輸入',
                         clickAction: '點擊',
                         sleepAction: '等待',
@@ -380,6 +510,8 @@
                         submitCrawl: '☑️完成操作',
                         inputOutput: '在元素<span title="#t1#" class="element">#t1#</span>內輸入<span title="#t2#">#t2#</span>',
                         clickOutput: '點擊元素<span title="#t#" class="element">#t#</span>',
+                        dblclickOutput: '雙擊元素<span title="#t#" class="element">#t#</span>',
+                        rclickOutput: '右擊元素<span title="#t#" class="element">#t#</span>',
                         copyOutput: '複製元素<span title="#t#" class="element">#t#</span>',
                         sleepOutput: '休眠<span title="#t#">#t#</span>毫秒',
                         inputNewValue: '請輸入新值',
@@ -414,6 +546,7 @@
                     };
                     break;
                 case 'ja':
+                case 'ja-JP':
                     config = {
                         import: 'インポート',
                         filter: 'フィルター',
@@ -421,9 +554,56 @@
                         importOrNot: '設定をインポートしますか? ',
                         settings: '構成スクリプト',
                         batchOpen: 'バッチオープン',
+                        split: {
+                            locale: "ja",
+                            title: "SearchJumper · 分割検索",
+                            button: "分割検索",
+                            query: "キーワードや質問をすべてのペインに送信",
+                            search: "検索 / 質問",
+                            layout: "レイアウト",
+                            columns2: "左右2列",
+                            rows2: "上下2段",
+                            columns3: "3列",
+                            columns4: "4列",
+                            previous: "前へ",
+                            next: "次へ",
+                            refresh: "再読み込み",
+                            open: "別タブ",
+                            close: "閉じる",
+                            retry: "再試行",
+                            loading: "読み込み中…",
+                            running: "送信中…",
+                            done: "準備完了",
+                            error: "読み込み失敗",
+                            empty: "すべてのペインを閉じました。検索エンジングループから分割検索を開始してください。",
+                            timeout: "ページの準備ができていません。別のタブでログインするか、エンジンのルールを確認して再試行してください。",
+                            skipped: "次のエンジンは元のメニューから開いてください：",
+                            divider: "ペインのサイズを変更",
+                            pages: "ページ切り替え",
+                            results: "検索結果",
+                            ended: "分割検索セッションを開けません。検索エンジングループから新しく開始してください。",
+                            noEngines: "このグループには分割検索で使えるウェブエンジンがありません。",
+                            httpOnly: "分割検索では、ユーザー名やパスワードを含まない HTTP(S) ページのみ使用できます。",
+                            invalidRequest: "検索リクエストが無効です。エンジンのルールを確認してください。",
+                            invalidActions: "自動操作が無効です。エンジンのルールを確認してください。",
+                            missingForm: "フォームの送信先がありません。",
+                            formMismatch: "フォームの送信先がペインの URL と一致しません。",
+                            unsupportedBrowser: "このブラウザでは埋め込みルールを分離できません。Chrome 145 以降が必要です。",
+                            invalidTab: "分割検索タブが無効です。",
+                            pageClosed: "分割検索ページは閉じられました。",
+                            pageOnly: "分割検索ページだけが自身のセッションを変更できます。",
+                            invalidSender: "この拡張機能以外からのリクエストです。",
+                            invalidSearch: "分割検索のパラメーターが無効です。",
+                            invalidEngine: "検索エンジンの情報が無効です。",
+                            invalidUpdate: "検索の更新リクエストが無効です。",
+                            missingPane: "ペインは閉じられました。",
+                            unknownCommand: "不明な分割検索操作です。",
+                            pageChanged: "送信を確認する前にページが移動しました。必要に応じて再試行してください。"
+                        },
                         batchOpenConfirm: 'バッチオープンしてもよろしいですか? ',
                         postOver: '正常に送信されました:',
                         postError: '送信に失敗しました:',
+                        copyOver: 'コピーに成功しました',
                         keywords: '検索語を入力してください',
                         targetUrl: '検索 URL を入力してください',
                         siteName: 'サイト名',
@@ -459,7 +639,7 @@
                         reverseBtn: '検索テキストを復元',
                         pinBtn: '検索テキストを修正、すべてのタブで検索',
                         locBtn: 'サイドバーを検索',
-                        filterSites: '検索エンジンをフィルタリング',
+                        filterSites: '検索エンジン',
                         searchInPage: 'ページ内を検索',
                         removeBtn: '検索語を削除',
                         saveRuleBtn: '現在のサイトの検索語を保存',
@@ -501,7 +681,9 @@
                         copyAction: '📄要素のコピー',
                         submitCrawl: '☑️操作を完了',
                         inputOutput: '要素 <span title="#t1#" class="element">#t1#</span> 内に <span title="#t2#">#t2#</span> を入力します',
-                        clickOutput: 'クリック要素<span title="#t#" class="element">#t#</span>',
+                        clickOutput: 'クリック<span title="#t#" class="element">#t#</span>',
+                        dblclickOutput: 'ダブルクリック<span title="#t#" class="element">#t#</span>',
+                        rclickOutput: '右クリック<span title="#t#" class="element">#t#</span>',
                         copyOutput: 'コピー要素<span title="#t#" class="element">#t#</span>',
                         sleepOutput: 'スリープ<span title="#t#">#t#</span> ミリ秒',
                         inputNewValue: '新しい値を入力してください',
@@ -536,16 +718,64 @@
                     };
                     break;
                 case 'ru':
+                case 'ru-RU':
                     config = {
-                        import: 'Импортировать', //????????????????????????????????????????????????????????????
-                        filter: 'Фильтровать', //????????????????????????????????????????????????????????????
-                        selectAll: 'Выбрать всё', //????????????????????????????????????????????????????????????
+                        import: 'Импортировать',
+                        filter: 'Фильтровать',
+                        selectAll: 'Выбрать всё',
                         importOrNot: 'Импортировать эту конфигурацию?',
                         settings: 'Настройки',
                         batchOpen: 'Групповой поиск',
+                        split: {
+                            locale: "ru",
+                            title: "SearchJumper · Поиск в панелях",
+                            button: "Поиск в панелях",
+                            query: "Введите запрос или вопрос для всех панелей",
+                            search: "Найти / Спросить",
+                            layout: "Расположение",
+                            columns2: "2 столбца",
+                            rows2: "2 строки",
+                            columns3: "3 столбца",
+                            columns4: "4 столбца",
+                            previous: "Назад",
+                            next: "Вперёд",
+                            refresh: "Обновить",
+                            open: "Вкладка",
+                            close: "Закрыть",
+                            retry: "Повторить",
+                            loading: "Загрузка…",
+                            running: "Отправка…",
+                            done: "Готово",
+                            error: "Ошибка загрузки",
+                            empty: "Все панели закрыты. Запустите новый поиск в панелях из группы поисковиков.",
+                            timeout: "Страница ещё не готова. Войдите в аккаунт в новой вкладке или проверьте правило поисковика и повторите попытку.",
+                            skipped: "Откройте эти поисковики через обычное меню: ",
+                            divider: "Изменить размер панелей",
+                            pages: "Страницы",
+                            results: "Результаты поиска",
+                            ended: "Не удалось открыть сеанс. Запустите новый поиск в панелях из группы поисковиков.",
+                            noEngines: "В этой группе нет веб-поисковиков для поиска в панелях.",
+                            httpOnly: "В панелях можно открывать только HTTP(S)-страницы без имени пользователя и пароля в адресе.",
+                            invalidRequest: "Недопустимый поисковый запрос. Проверьте правило поисковика.",
+                            invalidActions: "Недопустимые автоматические действия. Проверьте правило поисковика.",
+                            missingForm: "Не указан адрес отправки формы.",
+                            formMismatch: "Адрес отправки формы не совпадает с адресом панели.",
+                            unsupportedBrowser: "Браузер не поддерживает изоляцию правил встраивания. Требуется Chrome 145 или новее.",
+                            invalidTab: "Недопустимая вкладка поиска в панелях.",
+                            pageClosed: "Страница поиска в панелях уже закрыта.",
+                            pageOnly: "Только страница поиска в панелях может изменять свой сеанс.",
+                            invalidSender: "Запрос поступил не из этого расширения.",
+                            invalidSearch: "Недопустимые параметры поиска в панелях.",
+                            invalidEngine: "Недопустимые данные поисковика.",
+                            invalidUpdate: "Недопустимый запрос на обновление поиска.",
+                            missingPane: "Панель уже закрыта.",
+                            unknownCommand: "Неизвестная команда поиска в панелях.",
+                            pageChanged: "Страница изменилась до подтверждения отправки. При необходимости повторите попытку."
+                        },
                         batchOpenConfirm: 'Искать с помощью всех движков группы?',
                         postOver: 'Post over: ',
                         postError: 'Post fail: ',
+                        copyOver: 'Скопировано успешно',
                         keywords: 'Input keywords',
                         targetUrl: 'Input URL',
                         siteName: 'Название',
@@ -559,7 +789,7 @@
                         siteExist: 'Движок уже существует. Добавить его как клон?',
                         siteAddOver: 'Движок успешно добавлен',
                         multiline: 'Использовать многострочный поиск?',
-                        multilineTooMuch: 'Количество строк превышает 10. Продолжить поиск?', //????????????????????????????????????????????????????????????
+                        multilineTooMuch: 'Количество строк превышает 10. Продолжить поиск?',
                         inputPlaceholder: 'Фильтры',
                         inputTitle: 'Filter engines, support * ? wildcards, $ means end, ^ means start, type name**site name to filter type like "image**google", tab to next. ',
                         inputKeywords: 'Ввести ключевые слова поиска',
@@ -587,25 +817,25 @@
                         saveRuleBtn: 'Сохранить правило поиска текущего сайта',
                         wordContent: 'Слово или фраза для поиска',
                         wordHide: 'Hide parent element',
-                        wordHideTips: 'Глубина элемента, 0 - это текущее значение', //????????????????????????????????????????????????????????????
+                        wordHideTips: 'Глубина элемента, 0 - это текущее значение',
                         wordStyle: 'Стиль выделения слова',
                         wordTitle: 'Аннотация к искомому слову',
                         re: 'RegExp',
                         ignoreCase: 'Игнорировать регистр',
-                        filterLink: 'Фильтровать ссылку', //????????????????????????????????????????????????????????????
+                        filterLink: 'Фильтровать ссылку',
                         modify: 'Готово',
                         cancel: 'Отменить',
                         modifyWord: 'Изменить параметры',
                         addSearchEngine: 'Добавить движок',
                         noValidItemAsk: 'Не найден подходящий элемент. Хотите вручную добавить сайт?',
-                        expand: 'Развернуть другие сайты', //????????????????????????????????????????????????????????????
+                        expand: 'Развернуть другие сайты',
                         add: 'Добавить',
                         addWord: 'Добавить новое слово',
                         wordRange: 'Выделить область поиска',
                         customInputFrame: 'Пользовательские параметры поиска',
                         customSubmit: 'Принять',
                         finalSearch: 'Целевая строка поиска',
-                        search: 'Искать это', //????????????????????????????????????????????????????????????
+                        search: 'Искать это',
                         siteKeywords: 'Ключевые слова (разделитель |)',
                         siteMatch: 'Regexp для соответствия URL сайта',
                         openSelect: 'Открыть в',
@@ -624,6 +854,8 @@
                         submitCrawl: '☑️Завешить действие',
                         inputOutput: 'Ввод <span title="#t2#">#t2#</span> в элемент <span title="#t1#" class="element">#t1#</span>',
                         clickOutput: 'Клик по элементу <span title="#t#" class="element">#t#</span>',
+                        dblclickOutput: 'Двойной клик <span title="#t#" class="element">#t#</span>',
+                        rclickOutput: 'щелкните ПКМ <span title="#t#" class="element">#t#</span>',
                         copyOutput: 'Копировать элемент <span title="#t#" class="element">#t#</span>',
                         sleepOutput: 'Ждать <span title="#t#">#t#</span> миллисекунд',
                         inputNewValue: 'Введите новое значение',
@@ -658,9 +890,56 @@
                         importOrNot: 'Do you want to import this config?',
                         settings: 'Settings',
                         batchOpen: 'Batch open',
+                        split: {
+                            locale: "en",
+                            title: "SearchJumper · Split search",
+                            button: "Split search",
+                            query: "Search or ask all engines",
+                            search: "Search / Ask",
+                            layout: "Layout",
+                            columns2: "2 columns",
+                            rows2: "2 rows",
+                            columns3: "3 columns",
+                            columns4: "4 columns",
+                            previous: "Previous",
+                            next: "Next",
+                            refresh: "Refresh",
+                            open: "Open tab",
+                            close: "Close",
+                            retry: "Retry",
+                            loading: "Loading…",
+                            running: "Sending…",
+                            done: "Ready",
+                            error: "Unable to load",
+                            empty: "All panes are closed. Start another split search from an engine group.",
+                            timeout: "The page is not ready. Sign in in a new tab, or check the engine rule and retry.",
+                            skipped: "These engines use their original entry: ",
+                            divider: "Resize panes",
+                            pages: "Pages",
+                            results: "Search results",
+                            ended: "Unable to open this split session. Start another split search from an engine group.",
+                            noEngines: "No web engines are available for split search in this group.",
+                            httpOnly: "Only HTTP(S) web pages without a username or password in the URL can be embedded.",
+                            invalidRequest: "Invalid search request. Check the engine rule.",
+                            invalidActions: "Invalid automation actions. Check the engine rule.",
+                            missingForm: "Missing form destination.",
+                            formMismatch: "Form destination does not match the pane.",
+                            unsupportedBrowser: "This browser cannot isolate embedding rules. Chrome 145 or newer is required.",
+                            invalidTab: "Invalid split tab.",
+                            pageClosed: "The split page is no longer open.",
+                            pageOnly: "Only the split page can change its session.",
+                            invalidSender: "The request is not from this extension.",
+                            invalidSearch: "Invalid split search parameters.",
+                            invalidEngine: "Invalid engine information.",
+                            invalidUpdate: "Invalid search update.",
+                            missingPane: "The pane has already been closed.",
+                            unknownCommand: "Unknown split command.",
+                            pageChanged: "The page changed before submission was confirmed. Retry if needed."
+                        },
                         batchOpenConfirm: 'Batch open urls?',
                         postOver: 'Post over: ',
                         postError: 'Post fail: ',
+                        copyOver: 'Copied successfully',
                         keywords: 'Input keywords',
                         targetUrl: 'Input URL',
                         siteName: 'Site Name',
@@ -696,7 +975,7 @@
                         recoverBtn: 'Recover find text',
                         pinBtn: 'Pin search text to search in all tabs',
                         locBtn: 'Sidebar to locate',
-                        filterSites: 'Filter search engines',
+                        filterSites: 'Search engines',
                         searchInPage: 'Find in page',
                         removeBtn: 'Remove search term',
                         saveRuleBtn: 'Save the search term of the current site',
@@ -739,6 +1018,8 @@
                         submitCrawl: '☑️Complete operation',
                         inputOutput: 'Input <span title="#t2#">#t2#</span> in the element <span title="#t1#" class="element">#t1#</span>',
                         clickOutput: 'Click on element <span title="#t#" class="element">#t#</span>',
+                        dblclickOutput: 'Double click <span title="#t#" class="element">#t#</span>',
+                        rclickOutput: 'Right click <span title="#t#" class="element">#t#</span>',
                         copyOutput: 'Copy element <span title="#t#" class="element">#t#</span>',
                         sleepOutput: 'Sleep for <span title="#t#">#t#</span> milliseconds',
                         inputNewValue: 'Please enter a new value',
@@ -771,7 +1052,11 @@
             return config[name] ? (param ? config[name].replace(/#t#/g, param).replace(/#t1#/g, param[0]).replace(/#t2#/g, param[1]) : config[name]) : name;
         };
         const isMobile = ('ontouchstart' in document.documentElement);
-        var enableDebug = true;
+        var enableDebug = !isSplitPage && !splitFrame?.ok;
+        let splitTaskSignal = null;
+        function checkSplitTask() {
+            if (splitTaskSignal) splitTaskSignal.throwIfAborted();
+        }
         var debug = (str, title) => {
             if(enableDebug) {
                 console.log(
@@ -783,9 +1068,187 @@
         };
         var disabled = false;
         var isInConfigPage = false;
+        var lastRequestUrl;
 
-        function createHTML(html = "") {
-            return escapeHTMLPolicy ? escapeHTMLPolicy.createHTML(html) : html;
+        function createHTML(html = "", doc) {
+            const targetDoc = doc || document;
+            const fragment = targetDoc.createDocumentFragment();
+            if (html === null || html === undefined || html === '') return fragment;
+            parseHTMLToFragment(String(html), fragment, targetDoc);
+            return fragment;
+        }
+        let canDirectSetHTML = true;
+        let canPolicySetHTML = true;
+        let escapeHTMLPolicy;
+        let escapeHTMLCreator;
+        const MY_POLICY_NAME = 'searchjumper_default';
+        const SVG_NS = 'http://www.w3.org/2000/svg';
+        const VOID_TAGS = {
+            area: true,
+            base: true,
+            br: true,
+            col: true,
+            embed: true,
+            hr: true,
+            img: true,
+            input: true,
+            link: true,
+            meta: true,
+            param: true,
+            source: true,
+            track: true,
+            wbr: true
+        };
+        const RAW_TEXT_TAGS = {
+            script: true,
+            style: true,
+            textarea: true,
+            title: true,
+            xmp: true,
+            plaintext: true,
+            noscript: true
+        };
+        const HTML_ENTITIES = {
+            amp: '&',
+            lt: '<',
+            gt: '>',
+            quot: '"',
+            apos: "'",
+            nbsp: '\u00A0'
+        };
+        function decodeEntities(text) {
+            return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, function(_, code) {
+                if (code[0] === '#') {
+                    const isHex = code[1] === 'x' || code[1] === 'X';
+                    const num = parseInt(code.slice(isHex ? 2 : 1), isHex ? 16 : 10);
+                    if (!isNaN(num)) {
+                        try { return String.fromCodePoint(num); } catch(e) {}
+                    }
+                    return '&' + code + ';';
+                }
+                const key = code.toLowerCase();
+                return (key in HTML_ENTITIES) ? HTML_ENTITIES[key] : '&' + code + ';';
+            });
+        }
+        function parseHTMLToFragment(html, fragment, doc) {
+            const stack = [fragment];
+            const tokenRe = /<!--[\s\S]*?-->|<!doctype[^>]*>|<\/?[a-zA-Z][^>]*>|[^<]+/gi;
+            let match;
+            while ((match = tokenRe.exec(html))) {
+                const token = match[0];
+                if (token[0] !== '<') {
+                    const text = decodeEntities(token);
+                    if (text) stack[stack.length - 1].appendChild(doc.createTextNode(text));
+                    continue;
+                }
+                if (token.indexOf('<!--') === 0) {
+                    continue;
+                }
+                if (/^<!doctype/i.test(token)) {
+                    continue;
+                }
+                if (token[1] === '/') {
+                    const tag = token.slice(2, -1).trim().toLowerCase();
+                    for (let i = stack.length - 1; i > 0; i--) {
+                        const node = stack[i];
+                        if (node.nodeType === 1 && node.nodeName.toLowerCase() === tag) {
+                            stack.length = i;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                const tagMatch = /^<\s*([^\s/>]+)/.exec(token);
+                if (!tagMatch) continue;
+                const rawName = tagMatch[1];
+                const tagName = rawName.toLowerCase();
+                const parent = stack[stack.length - 1];
+                const parentIsSvg = parent.nodeType === 1 && parent.namespaceURI === SVG_NS;
+                const isSvg = parentIsSvg || tagName === 'svg';
+                const el = isSvg ? doc.createElementNS(SVG_NS, rawName) : doc.createElement(tagName);
+                const attrPart = token.replace(/^<\s*[^\s/>]+/, '').replace(/\/?>$/, '');
+                if (attrPart) {
+                    const attrRe = /([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+                    let attrMatch;
+                    while ((attrMatch = attrRe.exec(attrPart))) {
+                        const name = attrMatch[1];
+                        const value = decodeEntities(attrMatch[2] || attrMatch[3] || attrMatch[4] || '');
+                        el.setAttribute(name, value);
+                    }
+                }
+                parent.appendChild(el);
+                const selfClosing = token.endsWith('/>');
+                if (!selfClosing && !VOID_TAGS[tagName]) {
+                    stack.push(el);
+                    if (RAW_TEXT_TAGS[tagName]) {
+                        const closeRe = new RegExp('<\\/\\s*' + tagName + '\\s*>', 'ig');
+                        closeRe.lastIndex = tokenRe.lastIndex;
+                        const closeMatch = closeRe.exec(html);
+                        if (closeMatch) {
+                            const rawText = html.slice(tokenRe.lastIndex, closeMatch.index);
+                            if (rawText) el.appendChild(doc.createTextNode(rawText));
+                            tokenRe.lastIndex = closeMatch.index + closeMatch[0].length;
+                            stack.pop();
+                        }
+                    }
+                }
+            }
+        }
+        function ensureEscapeHTMLPolicy() {
+            if (!canPolicySetHTML) return null;
+            if (escapeHTMLCreator) return escapeHTMLPolicy;
+            const createPolicy = _unsafeWindow && _unsafeWindow.trustedTypes && _unsafeWindow.trustedTypes.createPolicy;
+            if (typeof createPolicy !== "function") return (canPolicySetHTML = false, null);
+            try {
+                escapeHTMLPolicy = createPolicy(MY_POLICY_NAME, {
+                    createHTML: (string, sink) => string,
+                    createScriptURL: string => string,
+                    createScript: string => string
+                });
+            } catch (e) {}
+            escapeHTMLCreator = escapeHTMLPolicy && escapeHTMLPolicy.createHTML;
+            if (!escapeHTMLCreator) canPolicySetHTML = false;
+            return escapeHTMLPolicy;
+        }
+        function tryDirectSetHTML(target, htmlStr) {
+            if (!canDirectSetHTML) return false;
+            try {
+                target.innerHTML = htmlStr;
+                return true;
+            } catch (e) {
+                canDirectSetHTML = false;
+                return false;
+            }
+        }
+        function tryPolicySetHTML(target, htmlStr) {
+            if (!canPolicySetHTML) return false;
+            ensureEscapeHTMLPolicy();
+            if (!escapeHTMLCreator) return false;
+            try {
+                target.innerHTML = escapeHTMLCreator(htmlStr);
+                return true;
+            } catch (e) {
+                canPolicySetHTML = false;
+                return false;
+            }
+        }
+        function setHTML(target, html, doc) {
+            if (!target) return;
+            const htmlStr = html === null || html === undefined ? '' : String(html);
+            if (tryDirectSetHTML(target, htmlStr) || tryPolicySetHTML(target, htmlStr)) return;
+            const targetDoc = doc || target.ownerDocument || document;
+            const fragment = createHTML(htmlStr, targetDoc);
+            while (target.firstChild) {
+                target.removeChild(target.firstChild);
+            }
+            target.appendChild(fragment);
+        }
+        function replaceOuterHTML(target, html, doc) {
+            if (!target || !target.parentNode) return;
+            const targetDoc = doc || target.ownerDocument || document;
+            const fragment = createHTML(html, targetDoc);
+            target.parentNode.insertBefore(fragment, target);
+            target.parentNode.removeChild(target);
         }
 
         var _GM_xmlhttpRequest, _GM_registerMenuCommand, _GM_notification, _GM_setClipboard, _GM_openInTab, _GM_addStyle, _GM_info, GM_fetch;
@@ -803,17 +1266,21 @@
                     return response.blob();
                 }
                 return response.text();
-            }).then(data => {f.onload && f.onload({status: res.status, response: data})}).catch(e => f.onerror && f.onerror(e))};
+            }).then(data => {
+                let doc = document.implementation.createHTMLDocument('');
+                setHTML(doc.documentElement, data, doc);
+                f.onload && f.onload({status: res.status, response: data, responseXML: doc})
+            }).catch(e => f.onerror && f.onerror(e))};
         }
         if (GM_fetch) {
             GM_fetch = async (url, option) => {
                 if (!url) return null;
+                lastRequestUrl = url;
                 return new Promise((resolve, reject) => {
                     let isPost = option && /^post$/i.test(option.method);
-                    _GM_xmlhttpRequest({
+                    let requestOption = {
                         method: (option && option.method) || 'GET',
                         url: url,
-                        data: (option && option.body) || '',
                         headers: (option && option.headers) || {
                             referer: url,
                             origin: url,
@@ -821,6 +1288,7 @@
                             'X-Requested-With': (isPost ? 'XMLHttpRequest' : '')
                         },
                         onload: function(d) {
+                            if (lastRequestUrl != url) return;
                             let response = d.response;
                             if (d.status >= 400 || !response) response = "";
                             let text = () => new Promise((r) => {
@@ -843,11 +1311,59 @@
                             debug(e);
                             reject(e);
                         }
-                    });
+                    };
+                    if (option && option.body) {
+                        requestOption.data = option.body;
+                    }
+                    if (option && option.responseType === "stream") {
+                        requestOption.responseType = "stream";
+                        delete requestOption.onload;
+                        requestOption.onloadstart = d => {
+                            if (!d || !d.response || !d.response.getReader) return;
+                            let bytes = [], callBack, buffer;
+                            const reader = d.response.getReader();
+                            let json = () => {
+                                let result = "";
+                                try {
+                                    if (buffer) {
+                                        result = buffer.trim();
+                                        if (/^data:/.test(result)) {
+                                            result = "[" + result.replace(/^data:\s+\[DONE\]\s*/m, "").trim().replace(/\n+/g, "\n").split("\n").map(line => line.replace(/^data:/, "")).join(",") + "]";
+                                        } else if (/^({.*} *\n)* *{.*}$/.test(result)) {
+                                            result = result.split("\n").pop();
+                                        } else if (/^\[[\s\S]+[^\]]$/.test(result)) {
+                                            result = result + "]";
+                                        }
+                                    }
+                                    return JSON.parse(result);
+                                } catch (e) {
+                                    return null;
+                                }
+                            };
+                            reader.read().then(function readBytes({done, value}) {
+                                if (lastRequestUrl != url) return;
+                                if (done) {
+                                    resolve({text: buffer, json: json, finalUrl: (d.finalUrl || url)});
+                                    return;
+                                }
+                                bytes = option.streamMode === "standalone" ? Array.from(value) : bytes.concat(Array.from(value));
+                                try {
+                                    buffer = new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+                                    option.onstream({text: buffer, json: json, finalUrl: (d.finalUrl || url)});
+                                } catch (e) {
+                                    console.log(e);
+                                }
+                                return reader.read().then(readBytes);
+                            });
+                        };
+                    }
+                    _GM_xmlhttpRequest(requestOption);
                 });
             }
         } else GM_fetch = fetch;
-        if (typeof GM_registerMenuCommand != 'undefined') {
+        if (inIframe) {
+            _GM_registerMenuCommand = (s, f) => {};
+        } else if (typeof GM_registerMenuCommand != 'undefined') {
             _GM_registerMenuCommand = GM_registerMenuCommand;
         } else if (typeof GM != 'undefined' && typeof GM.registerMenuCommand != 'undefined') {
             _GM_registerMenuCommand = GM.registerMenuCommand;
@@ -856,7 +1372,7 @@
         }
         if (ext) {
             _GM_openInTab = (s, t) => {
-                chrome.runtime.sendMessage({action: "openInTab", detail: {url: s, incognito: t && t.incognito, active: t && t.active}});
+                chrome.runtime.sendMessage({action: "openInTab", detail: {url: s, incognito: t && t.incognito, active: t && t.active, close: t && t.close}});
             };
         } else if (typeof GM_openInTab != 'undefined') {
             _GM_openInTab = GM_openInTab;
@@ -882,24 +1398,27 @@
             _GM_setClipboard = GM.setClipboard;
         } else {
             _GM_setClipboard = (s, i) => {
-                navigator.clipboard.writeText(s)
-                    .then(() => {
-                    console.log('Text copied to clipboard');
-                })
-                    .catch((error) => {
-                    console.error('Failed to copy text: ', error);
-                });
+                try {
+                    clipboard.writeText(s)
+                        .then(() => {
+                        console.log('Text copied to clipboard');
+                    })
+                        .catch((error) => {
+                        document.execCommand('copy');
+                        console.error('Failed to copy text: ', error);
+                    });
+                } catch (e) {
+                    document.execCommand('copy');
+                }
             };
         }
         _GM_addStyle = cssStr => {
             cssStr = cssStr.replace(/\n\s*/g, "");
             if (typeof GM_addStyle != 'undefined') {
                 return GM_addStyle(cssStr);
-            } else if (typeof GM != 'undefined' && typeof GM.addStyle != 'undefined') {
-                return GM.addStyle(cssStr);
             } else {
                 let styleEle = document.createElement("style");
-                styleEle.innerHTML = createHTML(cssStr);
+                setHTML(styleEle, cssStr);
                 document.head.appendChild(styleEle);
                 return styleEle;
             }
@@ -913,10 +1432,15 @@
         }
         if (!_unsafeWindow.searchJumperAddons) _unsafeWindow.searchJumperAddons = [];
         const curRef = document.referrer;
+        let href = location.href.slice(0, 500);
 
         var storage = {
             supportGM: typeof GM_getValue == 'function' && typeof GM_getValue('a', 'b') != 'undefined',
             supportGMPromise: typeof GM != 'undefined' && typeof GM.getValue == 'function' && typeof GM.getValue('a','b') != 'undefined',
+            supportCrossSave: function() {
+                return this.supportGM || this.supportGMPromise;
+            },
+            listItemCache: [],
             mxAppStorage: (function() {
                 try {
                     return window.external.mxGetRuntime().storage;
@@ -929,8 +1453,17 @@
                 } catch(e) {
                 }
             })(),
-            setItem: function (key, value) {
+            setItem: function (key, value, merge = false) {
                 if (ext) {
+                    if (key === 'cacheIcon') {
+                        return extensionApi.runtime.sendMessage({action: 'setIconCache', detail: {value, merge}}).then(result => {
+                            if (!result?.ok) throw new Error(result?.error || 'Could not save icon cache');
+                            return true;
+                        }).catch(error => {
+                            console.warn('SearchJumper icon cache:', error);
+                            return false;
+                        });
+                    }
                     chrome.storage.local.set({ [key]: value }, () => {});
                 } else if (this.supportGMPromise) {
                     GM.setValue(key, value);
@@ -953,7 +1486,7 @@
             getItem: async function (key, cb) {
                 var value;
                 if (ext) {
-                    let result = await chrome.storage.local.get([key]);
+                    let result = await extensionApi.storage.local.get([key]);
                     value = result && result[key];
                 } else if (this.supportGMPromise) {
                     value = await GM.getValue(key);
@@ -970,7 +1503,21 @@
                 return value;
             },
             getListItem: async function(list, key) {
-                var listData = await this.getItem(list);
+                if (ext && list === 'inPagePostParams') {
+                    try {
+                        const result = await extensionApi.runtime.sendMessage({action: 'getPageActions', detail: {host: key}});
+                        if (!result?.ok) throw new Error(result?.error || 'Could not read page actions');
+                        return result.value;
+                    } catch (error) {
+                        console.warn('SearchJumper page actions:', error);
+                        return null;
+                    }
+                }
+                var listData = this.listItemCache[list];
+                if (typeof listData === 'undefined') {
+                    listData = await this.getItem(list);
+                    this.listItemCache[list] = listData || null;
+                }
                 if (!listData) return null;
                 for(var i = 0; i < listData.length; i++) {
                     let data = listData[i];
@@ -981,7 +1528,15 @@
                 return null;
             },
             setListItem: async function(list, key, value) {
-                var listData = await this.getItem(list);
+                if (ext && list === 'inPagePostParams') {
+                    const result = await extensionApi.runtime.sendMessage({action: 'setPageActions', detail: {host: key, value}});
+                    if (!result?.ok) throw new Error(result?.error || 'Could not save page actions');
+                    return;
+                }
+                var listData = this.listItemCache[list];
+                if (typeof listData === 'undefined') {
+                    listData = await this.getItem(list);
+                }
                 if (!listData) listData = [];
                 listData = listData.filter(data => data && data.k != key);
                 if (value) {
@@ -989,6 +1544,7 @@
                     if (listData.length > 50) listData.pop();
                 }
                 this.setItem(list, listData);
+                this.listItemCache[list] = listData;
             }
         };
 
@@ -1132,12 +1688,6 @@
             await webDAV.write("inPageRule.json", JSON.stringify(searchData.prefConfig.inPageRule));
         }
 
-        var escapeHTMLPolicy;
-        if (_unsafeWindow.trustedTypes && _unsafeWindow.trustedTypes.createPolicy) {
-            escapeHTMLPolicy = _unsafeWindow.trustedTypes.createPolicy('searchjumper_default', {
-                createHTML: (string, sink) => string
-            });
-        }
         const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
 
         if (typeof String.prototype.replaceAll != 'function') {
@@ -1216,8 +1766,19 @@
             doc = doc || document;
             contextNode = contextNode || doc;
             try {
-                var result = doc.evaluate(xpath, contextNode, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-                return result.singleNodeValue && result.singleNodeValue.nodeType === 1 && result.singleNodeValue;
+                let xpathNode = (s, d, n) => {
+                    let result = d.evaluate(s, n, null, XPathResult.ANY_UNORDERED_NODE_TYPE, null);
+                    return result.singleNodeValue && result.singleNodeValue.nodeType === 1 && result.singleNodeValue;
+                };
+                let selSplit = xpath.split(" =>> ");
+                if (selSplit.length === 2) {
+                    let ele = xpathNode(selSplit[0], doc, contextNode);
+                    if (ele && ele.shadowRoot) {
+                        return xpathNode(selSplit[1], ele.shadowRoot, ele.shadowRoot);
+                    }
+                } else {
+                    return xpathNode(xpath, doc, contextNode);
+                }
             } catch (err) {
                 debug(`Invalid xpath: ${xpath}`);
                 return false;
@@ -1245,7 +1806,11 @@
             if (!doc) doc = document;
             try {
                 if (!isXPath(sel)) {
-                    return doc.querySelector(sel);
+                    let selSplit = sel.split(" =>> ");
+                    if (selSplit.length === 2) {
+                        let ele = doc.querySelector(selSplit[0]);
+                        return ele && ele.shadowRoot && ele.shadowRoot.querySelector(selSplit[1]);
+                    } else return doc.querySelector(sel);
                 }
             } catch(e) {
                 debug(e);
@@ -1253,32 +1818,33 @@
             return getElementByXpath(sel, doc, doc);
         }
 
-        function getElementTop(ele) {
+        function getElementTop(ele, targetIframe) {
             var actualTop = ele.offsetTop;
             var current = ele.offsetParent;
             while (current) {
                 actualTop += current.offsetTop;
                 current = current.offsetParent;
             }
-            if (ele.ownerDocument != document) {
-                let iframes = document.getElementsByTagName("iframe");
-                for (let i = 0; i < iframes.length; i++) {
-                    let iframe = iframes[i];
-                    let iframeDoc;
-                    try {
-                        iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-                    } catch(e) {
-                        break;
-                    }
-                    if (iframeDoc == ele.ownerDocument) {
-                        current = iframe;
+            if (targetIframe) {
+                current = targetIframe;
+                while (current) {
+                    actualTop += current.offsetTop;
+                    current = current.offsetParent;
+                }
+                try {
+                    let currentWindow = targetIframe.contentWindow.parent;
+                    targetIframe = currentWindow.frameElement;
+                    while (targetIframe) {
+                        current = targetIframe;
                         while (current) {
                             actualTop += current.offsetTop;
                             current = current.offsetParent;
                         }
-                        break;
+
+                        currentWindow = currentWindow.parent;
+                        targetIframe = currentWindow.frameElement;
                     }
-                }
+                } catch(e) {}
             }
             return actualTop;
         }
@@ -1290,7 +1856,7 @@
                 actualLeft += current.offsetLeft;
                 current = current.offsetParent;
             }
-            if (ele.ownerDocument != document) {
+            if (!document.isSameNode(ele.ownerDocument)) {
                 let iframes = document.getElementsByTagName("iframe");
                 for (let i = 0; i < iframes.length; i++) {
                     let iframe = iframes[i];
@@ -1300,7 +1866,7 @@
                     } catch(e) {
                         break;
                     }
-                    if (iframeDoc == ele.ownerDocument) {
+                    if (iframeDoc.isSameNode(ele.ownerDocument)) {
                         current = iframe;
                         while (current) {
                             actualLeft += current.offsetLeft;
@@ -1325,30 +1891,72 @@
             }
         }
 
-        function inputActive(doc) {
-            let activeEl = getActiveElement(doc);
-            if (activeEl &&
-                ((/INPUT|TEXTAREA/i.test(activeEl.nodeName) &&
-                  activeEl.getAttribute("aria-readonly") != "true"
+        async function loadIcon(img, src = img.dataset.src) {
+            if (!src) return;
+            if (ext && !/^data:/.test(src)) {
+                // Keep the URL available to clones while the background request is pending.
+                img.dataset.src = src;
+                // Cache may be enabled later, after src has become a data URL.
+                img.dataset.iconSrc = src;
+                src = await cacheAction(img);
+            }
+            if (src && src !== 'fail') img.src = src;
+            delete img.dataset.src;
+        }
+
+        function preloadImage(url, onSuccess) {
+            let img = new Image();
+            const cleanup = () => {
+                img.onload = null;
+                img.onerror = null;
+                img = null;
+            };
+
+            img.onload = function() {
+                if (typeof onSuccess === 'function') {
+                    onSuccess();
+                }
+                cleanup();
+            };
+
+            img.onerror = function() {
+                cleanup();
+            };
+
+            img.src = url;
+        }
+
+        function isInput(ele) {
+            if (ele &&
+                ((/INPUT|TEXTAREA/i.test(ele.nodeName) &&
+                  ele.getAttribute("aria-readonly") != "true"
                  ) ||
-                 activeEl.contentEditable == 'true'
+                 ele.contentEditable == 'true'
                 )
                ) {
                 return true;
             } else {
-                while (activeEl && activeEl.nodeName) {
-                    if (activeEl.contentEditable == 'true') return true;
-                    if (activeEl.nodeName.toUpperCase() == 'BODY') {
+                while (ele && ele.nodeName) {
+                    if (ele.contentEditable == 'true') return true;
+                    if (ele.nodeName.toUpperCase() == 'BODY') {
                         break;
                     }
-                    activeEl = activeEl.parentNode;
+                    ele = ele.parentNode;
                 }
             }
             return false;
         }
 
-        function waitForFontAwesome(callback) {
-            var retries = 50;
+        function inputActive(doc) {
+            let activeEl = getActiveElement(doc);
+            return isInput(activeEl);
+        }
+
+        async function waitForFontAwesome(callback) {
+            while (document.hidden) {
+                await sleep(500);
+            }
+            var retries = 100;
             var text = '\uf0c8';
             var checkReady = function() {
                 var canvas, context;
@@ -1385,14 +1993,15 @@
             setTimeout( checkReady, 100 );
         }
 
-        var logoBtn, searchBar, searchTypes = [], currentSite = false, disableState = false, cacheKeywords, cacheFilter, tipsStorage, localKeywords, lastSign, inPagePostParams, cacheIcon, historySites, historyType, sortTypeNames, sortSiteNames, cachePool = [], cacheFontPool = [], currentFormParams, globalInPageWords, navEnable, referrer, disableHighlight, lastAddType, allPageNewMode = false, lastModified = 0;
+        var logoBtn, searchBar, searchTypes = [], currentSite = false, disableState = false, cacheKeywords, cacheFilter, tipsStorage, localKeywords, lastSign, inPagePostParams, cacheIcon, historySites, historyType, sortTypeNames, sortSiteNames, cachePool = [], cacheFontPool = [], currentFormParams, globalInPageWords, navEnable, referrer, clickLink, disableHighlight, lastHighlight, lastAddType, allPageNewMode = false, lastModified = 0, allPageBgUrl;
         const logoBtnSvg = `<svg class="search-jumper-logoBtnSvg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><title>${_GM_info.script.name}</title><path d="M.736 510.464c0-281.942 228.335-510.5 510-510.5 135.26 0 264.981 53.784 360.625 149.522 95.643 95.737 149.375 225.585 149.375 360.978 0 281.94-228.335 510.5-510 510.5-281.665 0-510-228.56-510-510.5zm510-510.5v1021m-510-510.5h1020" fill="#fefefe"/><path d="M237.44 346.624a48.64 48.64 0 1 0 97.28 0 48.64 48.64 0 1 0-97.28 0zM699.904 346.624a48.64 48.64 0 1 0 97.28 0 48.64 48.64 0 1 0-97.28 0zM423.296 759.296c-64 0-115.712-52.224-115.712-115.712 0-26.624 9.216-52.224 25.6-72.704 9.216-11.776 26.112-13.312 37.888-4.096s13.312 26.112 4.096 37.888c-9.216 11.264-13.824 24.576-13.824 38.912 0 34.304 27.648 61.952 61.952 61.952s61.952-27.648 61.952-61.952c0-4.096-.512-8.192-1.024-11.776-2.56-14.848 6.656-28.672 21.504-31.744 14.848-2.56 28.672 6.656 31.744 21.504 1.536 7.168 2.048 14.336 2.048 22.016-.512 63.488-52.224 115.712-116.224 115.712z" fill="#333"/><path d="M602.08 760.296c-64 0-115.712-52.224-115.712-115.712 0-14.848 12.288-27.136 27.136-27.136s27.136 12.288 27.136 27.136c0 34.304 27.648 61.952 61.952 61.952s61.952-27.648 61.952-61.952c0-15.36-5.632-30.208-15.872-41.472-9.728-11.264-9.216-28.16 2.048-37.888 11.264-9.728 28.16-9.216 37.888 2.048 19.456 21.504 29.696 48.64 29.696 77.824 0 62.976-52.224 115.2-116.224 115.2z" fill="#333"/><ellipse ry="58" rx="125" cy="506.284" cx="201.183" fill="#faf"/><ellipse ry="58" rx="125" cy="506.284" cx="823.183" fill="#faf"/></svg>`;
+        const searchSvg = `<svg width="25" height="25" xmlns="http://www.w3.org/2000/svg" fill="currentcolor" viewBox="0 0 52.966 52.966"><path d="M51.704 51.273L36.844 35.82c3.79-3.8 6.14-9.04 6.14-14.82 0-11.58-9.42-21-21-21s-21 9.42-21 21 9.42 21 21 21c5.082 0 9.747-1.817 13.383-4.832l14.895 15.49c.196.206.458.308.72.308.25 0 .5-.093.694-.28.398-.382.41-1.015.028-1.413zM21.984 40c-10.478 0-19-8.523-19-19s8.522-19 19-19 19 8.523 19 19-8.525 19-19 19z"></path></svg>`;
         const logoBase64 = "data:image/svg+xml;base64,PHN2ZyBjbGFzcz0ic2VhcmNoLWp1bXBlci1sb2dvQnRuU3ZnIiB2aWV3Qm94PSIwIDAgMTAyNCAxMDI0IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxwYXRoIGQ9Ik0uNzM2IDUxMC40NjRjMC0yODEuOTQyIDIyOC4zMzUtNTEwLjUgNTEwLTUxMC41IDEzNS4yNiAwIDI2NC45ODEgNTMuNzg0IDM2MC42MjUgMTQ5LjUyMiA5NS42NDMgOTUuNzM3IDE0OS4zNzUgMjI1LjU4NSAxNDkuMzc1IDM2MC45NzggMCAyODEuOTQtMjI4LjMzNSA1MTAuNS01MTAgNTEwLjUtMjgxLjY2NSAwLTUxMC0yMjguNTYtNTEwLTUxMC41em01MTAtNTEwLjV2MTAyMW0tNTEwLTUxMC41aDEwMjAiIGZpbGw9IiNmZWZlZmUiLz48cGF0aCBkPSJNMjM3LjQ0IDM0Ni42MjRhNDguNjQgNDguNjQgMCAxIDAgOTcuMjggMCA0OC42NCA0OC42NCAwIDEgMC05Ny4yOCAwek02OTkuOTA0IDM0Ni42MjRhNDguNjQgNDguNjQgMCAxIDAgOTcuMjggMCA0OC42NCA0OC42NCAwIDEgMC05Ny4yOCAwek00MjMuMjk2IDc1OS4yOTZjLTY0IDAtMTE1LjcxMi01Mi4yMjQtMTE1LjcxMi0xMTUuNzEyIDAtMjYuNjI0IDkuMjE2LTUyLjIyNCAyNS42LTcyLjcwNCA5LjIxNi0xMS43NzYgMjYuMTEyLTEzLjMxMiAzNy44ODgtNC4wOTZzMTMuMzEyIDI2LjExMiA0LjA5NiAzNy44ODhjLTkuMjE2IDExLjI2NC0xMy44MjQgMjQuNTc2LTEzLjgyNCAzOC45MTIgMCAzNC4zMDQgMjcuNjQ4IDYxLjk1MiA2MS45NTIgNjEuOTUyczYxLjk1Mi0yNy42NDggNjEuOTUyLTYxLjk1MmMwLTQuMDk2LS41MTItOC4xOTItMS4wMjQtMTEuNzc2LTIuNTYtMTQuODQ4IDYuNjU2LTI4LjY3MiAyMS41MDQtMzEuNzQ0IDE0Ljg0OC0yLjU2IDI4LjY3MiA2LjY1NiAzMS43NDQgMjEuNTA0IDEuNTM2IDcuMTY4IDIuMDQ4IDE0LjMzNiAyLjA0OCAyMi4wMTYtLjUxMiA2My40ODgtNTIuMjI0IDExNS43MTItMTE2LjIyNCAxMTUuNzEyeiIgZmlsbD0iIzMzMyIvPjxwYXRoIGQ9Ik02MDIuMDggNzYwLjI5NmMtNjQgMC0xMTUuNzEyLTUyLjIyNC0xMTUuNzEyLTExNS43MTIgMC0xNC44NDggMTIuMjg4LTI3LjEzNiAyNy4xMzYtMjcuMTM2czI3LjEzNiAxMi4yODggMjcuMTM2IDI3LjEzNmMwIDM0LjMwNCAyNy42NDggNjEuOTUyIDYxLjk1MiA2MS45NTJzNjEuOTUyLTI3LjY0OCA2MS45NTItNjEuOTUyYzAtMTUuMzYtNS42MzItMzAuMjA4LTE1Ljg3Mi00MS40NzItOS43MjgtMTEuMjY0LTkuMjE2LTI4LjE2IDIuMDQ4LTM3Ljg4OCAxMS4yNjQtOS43MjggMjguMTYtOS4yMTYgMzcuODg4IDIuMDQ4IDE5LjQ1NiAyMS41MDQgMjkuNjk2IDQ4LjY0IDI5LjY5NiA3Ny44MjQgMCA2Mi45NzYtNTIuMjI0IDExNS4yLTExNi4yMjQgMTE1LjJ6IiBmaWxsPSIjMzMzIi8+PGVsbGlwc2Ugcnk9IjU4IiByeD0iMTI1IiBjeT0iNTA2LjI4NCIgY3g9IjIwMS4xODMiIGZpbGw9IiNmYWYiLz48ZWxsaXBzZSByeT0iNTgiIHJ4PSIxMjUiIGN5PSI1MDYuMjg0IiBjeD0iODIzLjE4MyIgZmlsbD0iI2ZhZiIvPjwvc3ZnPg==";
-        const noImgBase64 = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAyNCIgaGVpZ2h0PSIxMDI0IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPgo8cGF0aCBkPSJNNDI5LjAxMzMzMyA2NDBBMzIgMzIgMCAwIDEgMzg0IDU5NC45ODY2NjdsMzcuNzYtMzcuNzYtMjIuODI2NjY3LTIyLjYxMzMzNC0xMzUuNjggMTM1LjY4IDkwLjQ1MzMzNCA5MC40NTMzMzQgMTM1LjY4LTEzNS42OC0yMi42MTMzMzQtMjIuNjEzMzM0ek01MzQuNjEzMzMzIDM5OC45MzMzMzNsMjIuNjEzMzM0IDIyLjYxMzMzNEw1OTQuOTg2NjY3IDM4NEEzMiAzMiAwIDAgMSA2NDAgNDI5LjAxMzMzM2wtMzcuNzYgMzcuNzYgMjIuNjEzMzMzIDIyLjYxMzMzNCAxMzUuNjgtMTM1LjY4LTkwLjQ1MzMzMy05MC40NTMzMzR6IiBmaWxsPSIjNUU1QzVDIj48L3BhdGg+PHBhdGggZD0iTTUxMiAyMS4zMzMzMzNhNDkwLjY2NjY2NyA0OTAuNjY2NjY3IDAgMSAwIDQ5MC42NjY2NjcgNDkwLjY2NjY2N0E0OTAuNjY2NjY3IDQ5MC42NjY2NjcgMCAwIDAgNTEyIDIxLjMzMzMzM3ogbTMxNi44IDM1NC45ODY2NjdsLTE4MS4xMiAxODEuMTJhMzIgMzIgMCAwIDEtNDUuMjI2NjY3IDBMNTU3LjIyNjY2NyA1MTIgNTEyIDU1Ny4yMjY2NjdsNDUuMjI2NjY3IDQ1LjIyNjY2NmEzMiAzMiAwIDAgMSAwIDQ1LjIyNjY2N2wtMTgxLjEyIDE4MS4xMmEzMiAzMiAwIDAgMS00NS4yMjY2NjcgMGwtMTM1LjY4LTEzNS42OGEzMiAzMiAwIDAgMSAwLTQ1LjIyNjY2N2wxODEuMTItMTgxLjEyYTMyIDMyIDAgMCAxIDQ1LjIyNjY2NyAwTDQ2Ni43NzMzMzMgNTEyIDUxMiA0NjYuNzczMzMzbC00NS4yMjY2NjctNDUuMjI2NjY2YTMyIDMyIDAgMCAxIDAtNDUuMjI2NjY3bDE4MS4xMi0xODEuMTJhMzIgMzIgMCAwIDEgNDUuMjI2NjY3IDBsMTM1LjY4IDEzNS42OGEzMiAzMiAwIDAgMSAwIDQ1LjIyNjY2N3oiIGZpbGw9IiM1RTVDNUMiPjwvcGF0aD4KPC9zdmc+";
+        const noImgBase64 = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDI0IiBoZWlnaHQ9IjEwMjQiPjxwYXRoIGQ9Ik00MjkuMDEzMzMzIDY0MEEzMiAzMiAwIDAgMSAzODQgNTk0Ljk4NjY2N2wzNy43Ni0zNy43Ni0yMi44MjY2NjctMjIuNjEzMzM0LTEzNS42OCAxMzUuNjggOTAuNDUzMzM0IDkwLjQ1MzMzNCAxMzUuNjgtMTM1LjY4LTIyLjYxMzMzNC0yMi42MTMzMzR6TTUzNC42MTMzMzMgMzk4LjkzMzMzM2wyMi42MTMzMzQgMjIuNjEzMzM0TDU5NC45ODY2NjcgMzg0QTMyIDMyIDAgMCAxIDY0MCA0MjkuMDEzMzMzbC0zNy43NiAzNy43NiAyMi42MTMzMzMgMjIuNjEzMzM0IDEzNS42OC0xMzUuNjgtOTAuNDUzMzMzLTkwLjQ1MzMzNHoiIGZpbGw9IiNhMGEwYTAiLz48cGF0aCBkPSJNNTEyIDIxLjMzMzMzM2E0OTAuNjY2NjY3IDQ5MC42NjY2NjcgMCAxIDAgNDkwLjY2NjY2NyA0OTAuNjY2NjY3QTQ5MC42NjY2NjcgNDkwLjY2NjY2NyAwIDAgMCA1MTIgMjEuMzMzMzMzeiBtMzE2LjggMzU0Ljk4NjY2N2wtMTgxLjEyIDE4MS4xMmEzMiAzMiAwIDAgMS00NS4yMjY2NjcgMEw1NTcuMjI2NjY3IDUxMiA1MTIgNTU3LjIyNjY2N2w0NS4yMjY2NjcgNDUuMjI2NjY2YTMyIDMyIDAgMCAxIDAgNDUuMjI2NjY3bC0xODEuMTIgMTgxLjEyYTMyIDMyIDAgMCAxLTQ1LjIyNjY2NyAwbC0xMzUuNjgtMTM1LjY4YTMyIDMyIDAgMCAxIDAtNDUuMjI2NjY3bDE4MS4xMi0xODEuMTJhMzIgMzIgMCAwIDEgNDUuMjI2NjY3IDBMNDY2Ljc3MzMzMyA1MTIgNTEyIDQ2Ni43NzMzMzNsLTQ1LjIyNjY2Ny00NS4yMjY2NjZhMzIgMzIgMCAwIDEgMC00NS4yMjY2NjdsMTgxLjEyLTE4MS4xMmEzMiAzMiAwIDAgMSA0NS4yMjY2NjcgMGwxMzUuNjggMTM1LjY4YTMyIDMyIDAgMCAxIDAgNDUuMjI2NjY3eiIgZmlsbD0iI2EwYTBhMCIvPjwvc3ZnPg==";
         const closePath = '<path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64z m165.4 618.2l-66-0.3L512 563.4l-99.3 118.4-66.1 0.3c-4.4 0-8-3.5-8-8 0-1.9 0.7-3.7 1.9-5.2l130.1-155L340.5 359c-1.2-1.5-1.9-3.3-1.9-5.2 0-4.4 3.6-8 8-8l66.1 0.3L512 464.6l99.3-118.4 66-0.3c4.4 0 8 3.5 8 8 0 1.9-0.7 3.7-1.9 5.2L553.5 514l130 155c1.2 1.5 1.9 3.3 1.9 5.2 0 4.4-3.6 8-8 8z"></path>';
         const wordParam = "%s[lurest]?\\b";
         const wordParamReg = new RegExp(wordParam);
-        var targetElement, cssText, mainStyleEle;
+        var targetElement, hoverElement, cssText, mainStyleEle;
         var inMinMode = false;
 
         function sloarToLunar(sy, sm, sd) {
@@ -1561,6 +2170,7 @@
                  }
                  #search-jumper-root {
                      font-size: initial;
+                     font-family: Arial, "Microsoft YaHei", "Noto Sans SC", sans-serif;
                  }
                  #search-jumper.search-jumper-showall {
                      overflow-y: hidden;
@@ -1582,13 +2192,13 @@
                      display: none!important;
                  }
                  #search-jumper.search-jumper-showall #filterSites {
-                     background-color: #f5f5f5e0;
+                     background-color: #f5f6f8f0;
                      border: none;
                      height: 40px;
                      margin-bottom: 0;
                      padding: 5px;
                      margin: 0 10px;
-                     box-shadow: #ddd 0px 0px 3px;
+                     box-shadow: 0 2px 12px #20263114, inset 0 0 0 1px #282a2d1a;
                      outline: none;
                      box-sizing: border-box;
                      cursor: default;
@@ -1607,12 +2217,22 @@
                  #search-jumper.search-jumper-showall #filterSites>input,
                  #search-jumper.search-jumper-showall #filterSites>textarea {
                      background-color: white;
-                     color: black;
+                     color: #282a2d;
+                     border-radius: 16px;
+                     padding: 0 12px;
                      border: none;
                      outline: none;
                      box-sizing: border-box;
-                     font-size: 20px;
+                     font-size: 17px;
                      cursor: text;
+                 }
+                 #search-jumper.search-jumper-showall #filterSites:focus-within {
+                     outline: 2px solid #d73340;
+                     outline-offset: 2px;
+                 }
+                 #search-jumper :is(button, a):focus-visible {
+                     outline: 2px solid #d73340;
+                     outline-offset: -2px;
                  }
                  #search-jumper.search-jumper-showall #filterSites>span {
                      display: none;
@@ -1625,9 +2245,12 @@
                      position: static;
                      display: block!important;
                      height: fit-content;
-                     max-height: calc(100vh - 130px);
+                     max-height: calc(100vh - 110px);
                      overscroll-behavior: contain;
                      -ms-scroll-chaining: contain;
+                 }
+                 #search-jumper.search-jumper-showall #search-jumper-alllist .sitelist:hover {
+                     opacity: 1;
                  }
                  #search-jumper.search-jumper-showall #search-jumper-alllist .sitelist>.sitelistCon {
                      opacity: 1;
@@ -1684,18 +2307,67 @@
                      height: 100%;
                      z-index: -1;
                      transform: translateZ(0);
-                     ${searchData.prefConfig.noAni ? "background-color: rgba(0, 0, 0, 0.1);" : (
-                    "background-color: rgba(0, 0, 0, 0.1);" +
-                    //"backdrop-filter: blur(5px);" +
-                    //"-webkit-backdrop-filter: blur(5px);" +
+                     ${searchData.prefConfig.noAni ? "background-color: rgba(0, 0, 0, 0.6);" : (
+                    "background-color: rgba(0, 0, 0, 0.6);" +
                     "transition:background-color .6s ease;")}
                  }
-                 #search-jumper.search-jumper-showall:hover>.search-jumper-showallBg,
-                 body:hover+#search-jumper.search-jumper-showall>.search-jumper-showallBg {
+                 #search-jumper.search-jumper-showall>#search-jumper-alllist:hover~.search-jumper-showallBg {
                      background-color: rgba(0, 0, 0, 0.8);
+                 }
+                 #search-jumper.search-jumper-showall #search-jumper-alllist.new-mode>.sitelistBox:hover .sitelist {
+                     opacity: 0.5;
+                 }
+                 #search-jumper.search-jumper-showall #search-jumper-alllist.new-mode>.sitelistBox .sitelist:hover {
+                     opacity: 1;
+                     backdrop-filter: blur(5px);
                  }
                  #search-jumper.search-jumper-showall>.search-jumper-showallBg {
                      display: block;
+                 }
+                 #search-jumper>.groupTab {
+                     position: fixed;
+                     background: #ffffffee !important;
+                     left: 0;
+                     top: 0;
+                     overflow: hidden;
+                     height: 100%;
+                     overflow: auto;
+                     scrollbar-width: none;
+                     padding: 20px 0;
+                     box-sizing: border-box;
+                     display: none;
+                     z-index: 1;
+                 }
+                 #search-jumper.search-jumper-showall>#search-jumper-alllist.new-mode+.groupTab {
+                     display: block;
+                 }
+                 #search-jumper.search-jumper-showall>.groupTab::-webkit-scrollbar {
+                     width: 0 !important;
+                     height: 0 !important;
+                 }
+                 #search-jumper.search-jumper-showall>.groupTab>span {
+                     display: block;
+                     width: ${42 * this.scale}px;
+                     transition: all 0.25s ease;
+                     cursor: pointer;
+                 }
+                 #search-jumper.search-jumper-showall>.groupTab>span>span.search-jumper-word {
+                     opacity: 0.8;
+                 }
+                 #search-jumper.search-jumper-showall>.groupTab:hover>span {
+                     width: ${42 * this.scale + 150}px;
+                 }
+                 #search-jumper.search-jumper-showall>.groupTab>span:hover{
+                     background: #f5f7fa !important;
+                 }
+                 #search-jumper.search-jumper-showall>.groupTab:hover>span::after {
+                     content: attr(data-type);
+                     color: #6b6e74;
+                     position: absolute;
+                     margin-top: -${21 * this.scale + 10}px;
+                     left: ${42 * this.scale + 5}px;
+                     white-space: nowrap;
+                     font-weight: bold;
                  }
                  .search-jumper-historylistcon {
                      display: flex;
@@ -1706,7 +2378,7 @@
                      justify-content: center;
                      left: 0;
                      top: 60px;
-                     background: #f5f5f5e0;
+                     background: #ffffffdd;
                      border-bottom: 1px solid #ddd;
                      pointer-events: all;
                      min-height: 40px;
@@ -1725,36 +2397,44 @@
                      display: block;
                  }
                  #search-jumper-alllist>.sitelistBox {
-                     display: flex;
-                     min-width: 100%;
+                     display: inline-flex;
                      justify-content: center;
                      width: fit-content;
                      min-height: 100%;
                      position: initial;
+                     transition: all 0.3s ease;
                  }
-                 #search-jumper-alllist>.timeInAll,
-                 #search-jumper-alllist>.dayInAll {
+                 #search-jumper-alllist>.clockInAll {
                      position: fixed;
-                     bottom: 0;
-                     line-height: 1.5;
-                     color: white;
-                     opacity: 0.35;
-                     font-weight: bold;
-                     font-family: Arial,sans-serif,微软雅黑;
-                     overflow-wrap: normal;
-                     white-space: nowrap;
-                     margin: 20px;
+                     right: 24px;
+                     bottom: 18px;
+                     display: flex;
+                     flex-direction: column;
+                     gap: 4px;
+                     max-width: calc(100vw - 48px);
+                     color: #f5f6f8;
+                     text-shadow: 0 1px 4px #00000080;
+                     font-family: Arial, "Microsoft YaHei", "Noto Sans SC", sans-serif;
+                     font-variant-numeric: tabular-nums;
+                     text-align: right;
                      pointer-events: none;
-                     text-shadow: 0 0 5px black;
-                     background-image: initial;
                  }
-                 #search-jumper-alllist>.dayInAll {
-                     left: 0;
-                     font-size: 1.5vw;
+                 #search-jumper-alllist .timeInAll {
+                     font-size: clamp(24px, 2.2vw, 32px);
+                     line-height: 1.1;
+                     font-weight: 500;
+                     letter-spacing: .02em;
+                     white-space: nowrap;
                  }
-                 #search-jumper-alllist>.timeInAll {
-                     right: 0;
-                     font-size: 2vw;
+                 #search-jumper-alllist .dayInAll {
+                     font-size: 13px;
+                     line-height: 1.5;
+                     font-weight: normal;
+                     opacity: .75;
+                 }
+                 #search-jumper-alllist .dayInAll small {
+                     display: block;
+                     font-size: 12px;
                  }
                  #search-jumper-alllist>.modeSwitch {
                      position: fixed;
@@ -1767,12 +2447,16 @@
                      cursor: pointer;
                      transition: transform 0.25s ease;
                  }
+                 #search-jumper-alllist>.modeSwitch>* {
+                     pointer-events: none;
+                 }
                  #search-jumper-alllist>.modeSwitch:hover {
                      transform: scale(1.1);
                  }
                  #search-jumper-alllist.new-mode {
                      overflow-x: hidden;
                      overflow-y: auto;
+                     scrollbar-width: none;
                  }
                  #search-jumper-alllist.new-mode>.sitelistBox {
                      flex-wrap: wrap;
@@ -1783,6 +2467,7 @@
                  #search-jumper.search-jumper-showall #search-jumper-alllist.new-mode .sitelist {
                      width: 78%;
                      max-height: unset;
+                     height: auto !important;
                  }
                  #search-jumper.search-jumper-showall #search-jumper-alllist.new-mode .sitelist>.sitelistCon {
                      display: flex;
@@ -1792,8 +2477,7 @@
                  #search-jumper.search-jumper-showall #search-jumper-alllist.new-mode .sitelist>.sitelistCon>p {
                      text-align: left;
                      font-size: large;
-                     padding: 10px 30px;
-                     display: table-caption;
+                     padding: 15px 30px;
                      width: 100%;
                  }
                  #search-jumper #search-jumper-alllist.new-mode .sitelist a {
@@ -1821,7 +2505,7 @@
                  #search-jumper #search-jumper-alllist.new-mode .sitelist>.sitelistCon>div:before {
                      content: attr(title);
                      margin-left: 41px;
-                     color: #abb0bd;
+                     color: #93959a;
                      font-size: 12px;
                      height: 3em;
                      line-height: 1.5em;
@@ -1835,25 +2519,42 @@
                      position: absolute;
                      pointer-events: none;
                  }
-                 #search-jumper #search-jumper-alllist.new-mode .sitelist a>img {
-                     width: 48px;
-                     height: 48px;
+                 #search-jumper #search-jumper-alllist.new-mode .sitelist a>div>img {
+                     width: 38px;
+                     height: 38px;
+                     transform: scale(1);
+                     border-radius: 10%;
+                     transition: transform 0.25s ease;
+                 }
+                 #search-jumper #search-jumper-alllist.new-mode .sitelist a>div {
+                     content: '';
+                     position: absolute;
+                     width: 38px;
+                     height: 38px;
                      float: left;
                      margin-left: -20px;
+                     margin-top: -5px;
+                     background: #ffffff30;
+                     border-radius: 50%;
+                     padding: 10px;
                  }
                  #search-jumper #search-jumper-alllist.new-mode .sitelist a>p {
                      -webkit-line-clamp: 2;
                      -webkit-box-orient: vertical;
                      display: block;
-                     font-size: 16px;
+                     font-weight: bold;
                      height: 21px;
                      line-height: 21px;
                      margin-bottom: 8px;
                      margin-top: 0px;
-                     margin-left: 40px;
+                     margin-left: 45px;
                      overflow: hidden;
                      text-overflow: ellipsis;
                      white-space: nowrap;
+                     transition: color 0.25s ease;
+                 }
+                 #search-jumper #search-jumper-alllist.new-mode .sitelist a:hover>p {
+                     color: #f1404b;
                  }
                  #search-jumper .sitelist a+p {
                      display: none;
@@ -1874,20 +2575,33 @@
                  }
                  #search-jumper #search-jumper-alllist.new-mode .sitelist a+p>span {
                      flex-shrink: 0;
-                     font-size: 14px;
+                     font-size: 12px;
                      padding: 2px 6px;
                      background: rgb(160 160 160 / 10%);
                      color: #888;
-                     border-radius: 10px;
+                     border-radius: 5px;
                      transition: .3s;
                      cursor: pointer;
                  }
                  #search-jumper #search-jumper-alllist.new-mode .sitelist a+p>span:hover {
-                     color: white;
-                     background: rgb(160 160 160 / 30%);
+                     background: rgb(160 160 160 / 20%);
+                 }
+                 #search-jumper #search-jumper-alllist.new-mode .sitelist a:hover>div>img {
+                     transform: scale(1.1);
                  }
                  #search-jumper #search-jumper-alllist.new-mode .sitelistCon>div:hover>p {
                      opacity: 1;
+                 }
+                 #search-jumper #search-jumper-alllist.showbg>.inputGroup,
+                 #search-jumper #search-jumper-alllist.showbg>.search-jumper-btn,
+                 #search-jumper #search-jumper-alllist.showbg>.search-jumper-historylistcon,
+                 #search-jumper #search-jumper-alllist.showbg+.groupTab,
+                 #search-jumper #search-jumper-alllist.showbg>.sitelistBox {
+                     transition: .3s;
+                     opacity: 0;
+                 }
+                 #search-jumper.search-jumper-showall>#search-jumper-alllist.showbg:hover~.search-jumper-showallBg {
+                     background: unset;
                  }
                  .search-jumper-searchBarCon {
                      all: unset;
@@ -1895,6 +2609,7 @@
                      top: 0;
                      left: 0;
                      width: 100%;
+                     height: 100%;
                      z-index: 2147483646;
                      pointer-events: none;
                      text-align: center;
@@ -1903,15 +2618,15 @@
                      -ms-overflow-style: none;
                      scrollbar-width: none;
                      box-sizing: border-box;
-                     z-index: 2147483647;
                      user-select: none;
                  }
                  .search-jumper-searchBar {
-                     z-index: 2147483647;
+                     z-index: 2147483646;
                      overflow-wrap: break-word;
                      background: #505050cc;
                      border-radius: ${this.scale * 21}px!important;
-                     border: 1px solid #b3b3b3;
+                     border: 1px solid #ffffff40;
+                     box-shadow: 0 4px 16px #00000026;
                      display: inline-flex;
                      pointer-events: all;
                      margin-top: -${this.scale * 25}px;
@@ -1940,9 +2655,6 @@
                  .search-jumper-scroll.search-jumper-bottom {
                      overflow-y: hidden;
                  }
-                 .search-jumper-scroll>.search-jumper-searchBar {
-                     position: static !important;
-                 }
                  .search-jumper-scroll.search-jumper-right>.search-jumper-searchBar {
                      position: absolute !important;
                      top: 0;
@@ -1965,11 +2677,10 @@
                  .search-jumper-searchBar.initShow,
                  .resizePage>.search-jumper-searchBar {
                      margin-top: 0;
-                     ${searchData.prefConfig.noAni ? "" : "opacity: 0.8;"}
                      ${searchData.prefConfig.noAni ? "" : "transition:margin-top 0.25s ease, margin-left 0.25s, right 0.25s, opacity 0.25s, transform 0.25s;"}
                  }
                  .funcKeyCall>.search-jumper-searchBar.initShow {
-                     ${searchData.prefConfig.noAni ? "" : "transition:opacity 0.15s ease-out;"}
+                     ${searchData.prefConfig.noAni ? "" : "transition:opacity 0.15s ease-out, transform 0.25s ease;"}
                  }
                  #search-jumper.funcKeyCall {
                      overflow: visible;
@@ -1982,6 +2693,7 @@
                      position: absolute!important;
                      background: none;
                      border: none;
+                     box-shadow: none;
                      max-width: unset!important;
                      margin: unset;
                      ${searchData.prefConfig.minPopup && !searchData.prefConfig.noAni ? 'transition: transform 0.25s ease;' : ''}
@@ -2071,19 +2783,54 @@
                      opacity: 1;
                  }
                  ` : ''}
+                 #search-jumper>.search-jumper-searchBar>.search-jumper-type.search-jumper-open {
+                     overflow: visible;
+                 }
+                 #search-jumper>.search-jumper-searchBar>.search-jumper-type.search-jumper-open.search-jumper-move:hover {
+                     width: fit-content!important;
+                 }
+                 #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type.search-jumper-open:not(.not-expand) {
+                     overflow: auto;
+                 }
+                 #search-jumper.search-jumper-left>.search-jumper-searchBar>.search-jumper-type.search-jumper-open.search-jumper-move:hover,
+                 #search-jumper.search-jumper-right>.search-jumper-searchBar>.search-jumper-type.search-jumper-open.search-jumper-move:hover {
+                     width: 100%!important;
+                     height: fit-content!important;
+                 }
+                 #search-jumper.search-jumper-bottom>.search-jumper-searchBar>.search-jumper-type.search-jumper-open.search-jumper-move:hover {
+                     align-items: flex-end;
+                 }
                  #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type.search-jumper-open {
                      overscroll-behavior: contain;
                      -ms-scroll-chaining: contain;
+                     overflow: auto;
                  }
                  #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type>.sitelist {
+                     border-radius: 10px;
+                     box-shadow: 0px 0px 10px 0px #7a7a7a;
+                 }
+                 #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type>.sitelist>.sitelistCon {
+                     margin: 0;
+                     padding: 5px;
+                 }
+                 #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type>.sitelist>.sitelistCon>p {
                      display: none;
                  }
-                 ${searchData.prefConfig.minPopup ? `
-                 #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type>a.search-jumper-btn {
+                 #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type>.sitelist>.sitelistCon a>div>img {
+                     width: 20px;
+                     height: 20px;
+                 }
+                 ${searchData.prefConfig.minPopup && !searchData.prefConfig.hideTileType ? `
+                 #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type>a.search-jumper-btn,
+                 #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type>.searchJumperExpand {
                      display: none;
                  }
-                 #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type:hover>a.search-jumper-btn {
+                 #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type:hover>a.search-jumper-btn,
+                 #search-jumper.funcKeyCall>.search-jumper-searchBar>.search-jumper-type:hover>.searchJumperExpand {
                      display: grid;
+                 }
+                 input#search-jumper-tileInput {
+                     opacity: 0;
                  }
                  ` : ''}
                  ${searchData.prefConfig.minPopup == 2 ? `
@@ -2126,6 +2873,22 @@
                      max-width: ${42 * this.scale}px;
                      max-height: unset;
                  }
+                 .search-jumper-left .search-jumper-type,
+                 .search-jumper-right .search-jumper-type {
+                     max-width: ${40 * this.scale}px;
+                 }
+                 .search-jumper-left,
+                 .search-jumper-left>.search-jumper-searchBar,
+                 .search-jumper-right,
+                 .search-jumper-right>.search-jumper-searchBar {
+                     max-width: 100%;
+                 }
+                 .search-jumper-searchBar.grabbing {
+                     max-width: ${42 * this.scale}px;
+                 }
+                 .search-jumper-right .search-jumper-type {
+                     align-items: flex-end;
+                 }
                  .search-jumper-left {
                      height: 100%;
                      text-align: initial;
@@ -2141,6 +2904,9 @@
                  }
                  .searchJumperExpand {
                      opacity: 0.8;
+                 }
+                 .search-jumper-type.not-expand:not(.search-jumper-open)>.searchJumperExpand {
+                     display: none;
                  }
                  .searchJumperExpand:hover {
                      opacity: 1;
@@ -2165,11 +2931,12 @@
                  .search-jumper-bottom {
                      top: unset;
                      bottom: 0;
-                     height: ${this.scale * 42}px;
-                     max-height: ${this.scale * 43}px;
+                     height: ${this.scale * 42 * 2}px;
+                     max-height: ${this.scale * 43 * 2}px;
                      overflow-y: hidden;
                  }
                  .search-jumper-left>.search-jumper-searchBar {
+                     width: fit-content;
                      margin-top: 0;
                      margin-left: -${this.scale * 20}px;
                  }
@@ -2205,6 +2972,7 @@
                  .search-jumper-bottom>.search-jumper-searchBar {
                      position: relative;
                      margin-top: 0px;
+                     top: ${this.scale * 42}px;
                  }
                  .hideAll.search-jumper-bottom>.search-jumper-searchBar {
                      opacity: 0;
@@ -2220,13 +2988,14 @@
                  .search-jumper-btn {
                      position: relative;
                      display: grid;
+                     --scale: 1;
                      padding: ${1 * this.scale}px!important;
                      margin: ${3 * this.scale}px!important;
                      cursor: pointer;
                      box-sizing: content-box;
                      ${searchData.prefConfig.noAni ? "" : "transition:margin-left 0.25s ease, width 0.25s, height 0.25s, transform 0.25s, background 0.25s;"}
-                     width: ${32 * this.scale}px;
-                     height: ${32 * this.scale}px;
+                     width: calc(${32 * this.scale}px * var(--scale));
+                     height: calc(${32 * this.scale}px * var(--scale));
                      overflow: hidden;
                      text-overflow: ellipsis;
                      white-space: nowrap;
@@ -2236,6 +3005,9 @@
                      text-align: center;
                      background-image: initial;
                      filter: drop-shadow(1px 1px 3px #00000030);
+                 }
+                 .search-jumper-btn[data-disable] {
+                     opacity: 0.5;
                  }
                  #search-jumper.funcKeyCall .search-jumper-btn {
                      padding: ${1 * this.tilesZoom}px!important;
@@ -2256,7 +3028,7 @@
                      width: 100%;
                      bottom: 0px;
                      color: black!important;
-                     font-family: Arial, sans-serif;
+                     font-family: Arial, sans-serif,微软雅黑,"Noto Sans SC";
                      text-shadow: 0 1px white, 1px 0 white, -1px 0 white, 0 -1px white;
                      font-size: ${12 * this.scale}px;
                      font-weight: normal;
@@ -2266,7 +3038,7 @@
                      font-size: ${12 * this.tilesZoom}px;
                  }
                  .search-jumper-type>a.search-jumper-btn.historySite {
-                     box-shadow: 0px 0px 8px 0px #00000080;
+                     box-shadow: 0px 0px 6px 0px #00000099;
                  }
                  .search-jumper-btn>img {
                      width: ${32 * this.scale}px;
@@ -2282,9 +3054,9 @@
                      line-height: ${32 * this.scale}px;
                      font-size: ${14 * this.scale}px;
                      letter-spacing: 0;
-                     color: white;
+                     color: inherit;
                      opacity: 0.9;
-                     text-shadow: 0 0 1px #d9d9d9cc;
+                     text-shadow: inherit;
                  }
                  #search-jumper.funcKeyCall .search-jumper-btn>b {
                      line-height: ${32 * this.tilesZoom}px;
@@ -2306,7 +3078,7 @@
                  }
                  #search-jumper.funcKeyCall .search-jumper-btn>div {
                      line-height: ${32 * this.tilesZoom}px;
-                     border-radius: ${20 * this.tilesZoom}px;
+                     border-radius: ${10 * this.tilesZoom}px;
                      font-size: ${30 * this.tilesZoom}px;
                  }
                  .search-jumper-isInPage .search-jumper-btn>div,
@@ -2362,6 +3134,195 @@
                  .search-jumper-tips>.loader+font {
                      font-size: 25px;
                      line-height: 40px;
+                 }
+                 .search-jumper-tips>div {
+                     font-size: initial;
+                     line-height: initial;
+                     font-weight: normal;
+                     padding: 5px;
+                     cursor: initial;
+                 }
+                 .search-jumper-tips>div [data-read],
+                 .search-jumper-tips>div [data-close],
+                 .search-jumper-tips>div [data-paste],
+                 .search-jumper-tips>div [data-copy] {
+                     cursor: pointer;
+                 }
+                 .search-jumper-tips>div [data-search] {
+                     cursor: help;
+                 }
+                 .search-jumper-tips>div [data-close] {
+                     position: absolute;
+                     top: 0px;
+                     right: 0px;
+                     width: 20px;
+                     height: 20px;
+                     transition:all 0.2s ease;
+                 }
+                 .search-jumper-tips>div [data-close]:hover {
+                     color: red;
+                 }
+                 .search-jumper-tips>div [data-read] {
+                     color: #f9690e;
+                 }
+                 .search-jumper-tips>div [data-drag] {
+                     cursor: grab;
+                     touch-action: none;
+                     user-select: none;
+                 }
+                 .search-jumper-tips>div [data-copy] {
+                     display: inline-block;
+                     transition:all 0.2s ease;
+                 }
+                 .search-jumper-tips>div [data-copy]:hover {
+                     -webkit-transform: scale(1.1);
+                     -moz-transform: scale(1.1);
+                     transform: scale(1.1);
+                 }
+                 .search-jumper-tips.draging {
+                     cursor: grabbing;
+                     transition: none;
+                 }
+                 .search-jumper-tips.draging iframe {
+                     pointer-events: none;
+                 }
+                 .search-jumper-tips .showTips-inputGroup {
+                     display: flex;
+                     flex-wrap: wrap;
+                     text-align: left;
+                     justify-content: center;
+                 }
+                 .search-jumper-tips .showTips-input-title {
+                     font-size: 9pt;
+                     font-family: Arial, sans-serif,微软雅黑,"Noto Sans SC";
+                     display: inline-block;
+                     background-color: white;
+                     position: relative;
+                     left: 20px;
+                     padding: 0px 4px;
+                     text-align: left;
+                     color: #646464;
+                     word-break: break-all;
+                     max-width: 85%;
+                     z-index: 1;
+                 }
+                 .search-jumper-tips .showTips-inputGroup .select {
+                     resize: both;
+                     font-size: 11pt;
+                     font-weight: normal;
+                     border-radius: 4px;
+                     border: 1px solid rgba(0, 0, 0, 0.23);
+                     margin: 4px;
+                     font-family: inherit;
+                     background-color: #FFF;
+                     width: calc(100% - 8px);
+                     color: #4A4A4A;
+                     margin-top: -8px;
+                     padding: 4px;
+                     padding-top: 8px;
+                     box-sizing: border-box;
+                     height: 30px;
+                     position: relative;
+                 }
+                 .search-jumper-tips .showTips-inputGroup .searchBtn {
+                     -moz-transition: transform 0.3s ease;
+                     -webkit-transition: transform 0.3s ease;
+                     transition: transform 0.3s ease;
+                     cursor: pointer;
+                     margin-bottom: 5px;
+                 }
+                 .search-jumper-tips .showTips-inputGroup * {
+                     margin-left: 2px;
+                     margin-right: 2px;
+                 }
+                 .search-jumper-tips .showTips-inputGroup .searchBtn:hover {
+                     -webkit-transform: scale(1.1);
+                     -moz-transform: scale(1.1);
+                     transform: scale(1.1);
+                     filter: drop-shadow(1px 1px 3px #00000050);
+                 }
+                 .search-jumper-tips .showTips-inputGroup .select>input[type=text] {
+                     top: -8px;
+                     left: 0px;
+                     position: relative;
+                     border: unset!important;
+                     width: calc(100% - 25px);
+                     padding-bottom: 3px;
+                     margin-bottom: -30px;
+                     float: left;
+                     background: unset;
+                     height: 24px;
+                     outline: unset;
+                 }
+                 .search-jumper-tips .showTips-inputGroup .select>p {
+                     padding: 0;
+                     margin: 0;
+                     position: absolute;
+                     pointer-events: none;
+                 }
+                 .search-jumper-tips .showTips-inputGroup .select>.options {
+                     position: fixed;
+                     visibility: hidden;
+                     opacity: 0;
+                     transition: opacity .1s;
+                     background-color: #FFF;
+                     color: #4A4A4A;
+                     border: 1px solid rgba(0, 0, 0, 0.23);
+                     border-radius: 4px;
+                     z-index: 10;
+                     width: auto;
+                     max-width: 35%;
+                 }
+                 .search-jumper-tips .showTips-inputGroup .select>input:focus+p {
+                     display: none;
+                 }
+                 .search-jumper-tips .showTips-inputGroup .select:hover>.options {
+                     visibility: visible;
+                     opacity: 1;
+                 }
+                 .search-jumper-tips .showTips-inputGroup .select>.options>p {
+                     cursor: pointer;
+                     min-height: 20px;
+                     padding: 3px 0;
+                     margin: 0;
+                 }
+                 .search-jumper-tips .showTips-inputGroup .select>.options>p:hover {
+                     background: aliceblue;
+                 }
+                 .search-jumper-tips .showTips-inputGroup div.select:after {
+                     content: "▼";
+                     position: absolute;
+                     right: 6px;
+                     top: 8px;
+                     font-size: 9px;
+                 }
+                 @media (prefers-color-scheme: dark) {
+                     .search-jumper-tips .showTips-input-title,
+                     .search-jumper-tips .showTips-inputGroup input,
+                     .search-jumper-tips .showTips-inputGroup textarea,
+                     .search-jumper-tips .showTips-inputGroup .select {
+                         background-color: black!important;
+                         color: #d5d5d5!important;
+                     }
+                     .search-jumper-tips .showTips-inputGroup input:focus,
+                     .search-jumper-tips .showTips-inputGroup textarea:focus,
+                     .search-jumper-tips .showTips-inputGroup .select:focus {
+                         background-color: #1e1e1e!important;
+                     }
+                     .search-jumper-tips .showTips-inputGroup input,
+                     .search-jumper-tips .showTips-inputGroup textarea,
+                     .search-jumper-tips .showTips-inputGroup .select {
+                         border: 1px solid rgb(255 255 255 / 36%)!important;
+                         background-color: #0c0c0c!important;
+                     }
+                     .search-jumper-tips .showTips-inputGroup .select>.options {
+                         border: 1px solid rgb(255 255 255 / 36%)!important;
+                         background-color: black;
+                         color: #d5d5d5;
+                     }
+                     .search-jumper-tips .showTips-inputGroup .select>.options>p:hover {
+                         background: #1e1e1e;
+                     }
                  }
                  .search-jumper-logoBtnSvg {
                      width: ${32 * this.scale}px;
@@ -2463,6 +3424,35 @@
                      min-height: ${this.tilesZoom * 40}px;
                      min-width: ${this.tilesZoom * 40}px;
                  }
+                 #search-jumper-tileInput {
+                     display: none;
+                     opacity: 0.2;
+                     user-select: all;
+                     background-color: #212022;
+                     color: #adadad;
+                     border: none;
+                     font-size: 12px;
+                     margin-bottom: 3px;
+                     padding: 5px;
+                     border-radius: 10px;
+                     box-shadow: #adadad 0px 0px 2px;
+                     width: 100%;
+                     outline: none;
+                     box-sizing: border-box;
+                     cursor: text;
+                     -moz-transition: opacity 0.3s ease;
+                     -webkit-transition: opacity 0.3s ease;
+                     transition: opacity 0.3s ease;
+                 }
+                 #search-jumper-tileInput:hover {
+                     opacity: 0.5;
+                 }
+                 #search-jumper-tileInput:focus {
+                     opacity: 0.95;
+                 }
+                 #search-jumper.funcKeyCall #search-jumper-tileInput {
+                     display: block;
+                 }
                  .search-jumper-right>.searchJumperNavBar {
                      right: unset;
                      left: 0;
@@ -2474,7 +3464,7 @@
                  }
                  .search-jumper-bottom>.search-jumper-input {
                      bottom: unset;
-                     top: 5%;
+                     top: 80px;
                  }
                  #search-jumper .search-jumper-type.search-jumper-open.not-expand>a:nth-of-type(${searchData.prefConfig.expandTypeLength || 12})~a {
                      display: none!important;
@@ -2483,16 +3473,21 @@
                      position: fixed;
                      text-align: left;
                      background: #00000000;
-                     max-height: 100vh;
+                     max-height: calc(100vh - ${this.scale * 42}px);
                      overflow: scroll;
                      border: 0;
                      pointer-events: none;
                      opacity: 0;
-                     ${searchData.prefConfig.noAni ? "" : "transition:opacity 0.25s ease;"}
+                     ${searchData.prefConfig.noAni ? "" : "transition:opacity 0.5s ease;"}
                      scrollbar-width: none;
                      box-sizing: content-box;
                      overscroll-behavior: contain;
                      -ms-scroll-chaining: contain;
+                     z-index: 1;
+                 }
+                 #search-jumper>#search-jumper-alllist.new-mode .sitelist {
+                     overscroll-behavior: auto;
+                     -ms-scroll-chaining: auto;
                  }
                  #search-jumper .search-jumper-type:hover>.sitelist {
                      pointer-events: all;
@@ -2501,11 +3496,17 @@
                  #search-jumper .sitelist>.sitelistCon {
                      margin: 10px;
                      border-radius: 10px;
-                     box-shadow: 0px 0px 10px 0px #7a7a7a;
+                     box-shadow: 0 4px 16px #20263126, inset 0 0 0 1px #282a2d1a;
                      padding: 0 0 10px 0;
-                     background: #ffffffee;
+                     background-color: #ffffffdd;
+                     -moz-transition: background-color 0.3s ease;
+                     -webkit-transition: background-color 0.3s ease;
+                     transition: background-color 0.3s ease;
                      opacity: 1;
                      border: 0;
+                 }
+                 #search-jumper .sitelistBox:hover>.sitelist>.sitelistCon {
+                     background-color: rgba(255, 255, 255, 0.8);
                  }
                  #search-jumper .sitelist>.sitelistCon:hover {
                      opacity: 1;
@@ -2515,7 +3516,9 @@
                      height: 0 !important;
                  }
                  #search-jumper .sitelist>.sitelistCon>div {
-                     padding: 0 10px;
+                     margin: 0 4px;
+                     padding: 0 8px;
+                     border-radius: 6px;
                  }
                  #search-jumper .sitelist>.sitelistCon>div:hover {
                      background: #f5f7fa;
@@ -2526,7 +3529,7 @@
                      text-decoration: none;
                      cursor: pointer;
                  }
-                 #search-jumper .sitelist a>img {
+                 #search-jumper .sitelist a>div>img {
                      width: 20px;
                      height: 20px;
                      margin-right: 10px;
@@ -2539,10 +3542,10 @@
                  #search-jumper .sitelist a>p {
                      display: inline-block;
                      font-size: 15px;
-                     font-family: Arial, sans-serif;
+                     font-family: Arial, sans-serif,微软雅黑,"Noto Sans SC";
                      line-height: 25px;
                      margin: 5px auto;
-                     color: #6b6e74;
+                     color: #282a2d;
                      flex: 1;
                      text-align: left;
                      white-space: nowrap;
@@ -2565,21 +3568,54 @@
                      pointer-events: none;
                  }
                  #search-jumper .sitelist>.sitelistCon>p {
-                     color: #565656;
+                     display: flex;
+                     align-items: center;
+                     color: #282a2d;
                      text-align: center;
                      font-size: 16px;
-                     font-family: Arial, sans-serif;
+                     font-family: Arial, sans-serif,微软雅黑,"Noto Sans SC";
                      font-weight: bold;
-                     background: #f6f6f6;
+                     border-bottom: 1px solid #9e9e9e1a;
                      border-radius: 10px 10px 0 0;
                      overflow: hidden;
                      white-space: nowrap;
-                     text-overflow: ellipsis;
-                     padding: 3px 10px;
+                     padding: 6px 10px;
                      position: sticky;
                      top: 0;
                      pointer-events: none;
                      margin: -1px 0 0 0;
+                     backdrop-filter: blur(8px);
+                 }
+                 #search-jumper .sitelist>.sitelistCon>p>span {
+                     flex: 1;
+                     min-width: 0;
+                     overflow: hidden;
+                     text-overflow: ellipsis;
+                 }
+                 #search-jumper .search-jumper-split-btn {
+                     display: none;
+                     flex: none;
+                     white-space: nowrap;
+                     font: inherit;
+                     font-size: 12px;
+                     font-weight: normal;
+                     padding: 2px 6px;
+                     margin: 0 4px;
+                     border: 0;
+                     border-radius: 5px;
+                     background: rgb(160 160 160 / 10%);
+                     color: inherit;
+                     cursor: pointer;
+                 }
+                 #search-jumper.search-jumper-showall #search-jumper-alllist .search-jumper-split-btn {
+                     display: inline-block;
+                 }
+                 #search-jumper .search-jumper-split-btn:hover {
+                     background: rgb(160 160 160 / 20%);
+                 }
+                 #search-jumper .search-jumper-split-btn:focus-visible {
+                     outline: 2px solid currentColor;
+                     outline-offset: 2px;
                  }
                  .search-jumper-searchBar.disable-pointer>.search-jumper-type {
                      pointer-events: none;
@@ -2587,12 +3623,10 @@
                  .search-jumper-word {
                      background: black;
                      color: #ffffff!important;
-                     font-family: Arial, sans-serif;
+                     font-family: Arial, sans-serif,微软雅黑,"Noto Sans SC";
                      font-weight: 500;
-                     font-size: ${14 * this.scale}px;
-                     line-height: ${32 * this.scale}px;
-                     width: ${32 * this.scale}px;
-                     height: ${32 * this.scale}px;
+                     font-size: ${13 * this.scale}px;
+                     line-height: calc(${32 * this.scale}px * var(--scale));
                      min-width: ${32 * this.scale}px;
                      min-height: ${32 * this.scale}px;
                      letter-spacing: 0px;
@@ -2603,9 +3637,7 @@
                      border-radius: ${20 * this.scale}px!important;
                  }
                  a.search-jumper-word>span {
-                     border-radius: ${20 * this.scale}px!important;
-                     width: ${32 * this.tilesZoom}px;
-                     height: ${32 * this.tilesZoom}px;
+                     border-radius: 50%!important;
                      min-width: ${32 * this.tilesZoom}px;
                      min-height: ${32 * this.tilesZoom}px;
                      background: white;
@@ -2642,9 +3674,8 @@
                      background-image: initial;
                  }
                  .search-jumper-type img {
-                     width: ${32 * this.scale}px;
-                     height: ${32 * this.scale}px;
-                     border-radius: ${20 * this.scale}px;
+                     width: 100%;
+                     height: 100%;
                      margin-top: unset;
                  }
                  #search-jumper.funcKeyCall .search-jumper-type img {
@@ -2655,14 +3686,14 @@
                      position: absolute;
                  }
                  .search-jumper-tips {
-                     z-index: 2147483647;
+                     z-index: 2147483646;
                      pointer-events: none;
                      position: fixed;
                      font-size: ${35 * this.tipsZoom}px;
-                     background: #f5f5f5e0;
+                     background: #f5f5f5f0;
                      border-radius: ${10 * this.tipsZoom}px!important;
-                     padding: 5px;
-                     box-shadow: 0px 0px 10px 0px #000;
+                     padding: 6px;
+                     box-shadow: 0 8px 24px #20263133, inset 0 0 0 1px #282a2d1a;
                      font-weight: bold;
                      ${searchData.prefConfig.noAni ? "" : "transition: all 0.2s ease;"}
                      color: black;
@@ -2675,11 +3706,37 @@
                      text-align: center;
                      box-sizing: content-box;
                      overflow: hidden;
-                     font-family: Roboto,arial,sans-serif;
+                     scrollbar-width: none;
+                     font-family: Roboto,arial,sans-serif,微软雅黑,"Noto Sans SC";
+                     cursor: grab;
+                     max-height: 80vh;
+                     overscroll-behavior: contain;
+                     -ms-scroll-chaining: contain;
+                 }
+                 .search-jumper-tips::-webkit-scrollbar {
+                     width: 0 !important;
+                     height: 0 !important;
+                 }
+                 .search-jumper-tips:hover {
+                     overflow: auto;
                  }
                  .search-jumper-tips * {
                      max-width: 640px;
                      max-width: min(80vw,640px);
+                     margin: auto;
+                 }
+                 .search-jumper-tips .markdown {
+                     white-space: pre-wrap;
+                     line-height: 1.2;
+                     text-align: initial;
+                     margin: 10px;
+                     display: block;
+                     user-select: text;
+                     cursor: auto;
+                 }
+                 .search-jumper-tips iframe {
+                     border: unset;
+                     display: block;
                  }
                  .search-jumper-searchBar>.search-jumper-type {
                      padding: 0px;
@@ -2757,13 +3814,14 @@
                      display: block;
                  }
                  .search-jumper-input {
-                     width: 80%;
+                     width: 50%;
                      min-width: 500px;
                      bottom: 2%;
                      left: 50%;
-                     margin: 0 0 0 -40%;
+                     margin: 0 0 0 -25%;
+                     margin-left: min(-25%, -250px);
                      position: fixed;
-                     font-family: Arial, sans-serif;
+                     font-family: Arial, sans-serif,微软雅黑,"Noto Sans SC";
                      text-align: left;
                      box-shadow: 0px 2px 10px rgb(0 0 0 / 80%);
                      border: 1px solid rgb(179 179 179 / 10%);
@@ -2962,6 +4020,11 @@
                  .inputGroup svg.checked {
                      fill: #1E88E5;
                  }
+                 @media screen and (max-width: 2048px) {
+                     #search-jumper.search-jumper-showall #search-jumper-alllist.new-mode .sitelist {
+                         width: 1580px;
+                     }
+                 }
                  @media screen and (max-width: 1920px) {
                      #search-jumper.search-jumper-showall #search-jumper-alllist.new-mode .sitelist {
                          width: 1320px;
@@ -2988,31 +4051,44 @@
                      }
                      #search-jumper.search-jumper-showall #search-jumper-alllist.new-mode .sitelist>.sitelistCon {
                          width: calc(100% - 20px);
+                         display: grid;
+                         grid-template-columns: repeat(2, minmax(0, 1fr));
                      }
-                     #search-jumper-alllist>.timeInAll, #search-jumper-alllist>.dayInAll {
-                         margin: 10px;
+                     #search-jumper.search-jumper-showall #search-jumper-alllist.new-mode .sitelist>.sitelistCon>p {
+                         grid-column: 1 / -1;
+                         box-sizing: border-box;
+                         padding: 12px 16px;
+                     }
+                     #search-jumper #search-jumper-alllist.new-mode .sitelist>.sitelistCon>div {
+                         position: relative;
+                         min-width: 0;
+                     }
+                     #search-jumper-alllist>.clockInAll {
+                         right: 16px;
+                         bottom: 16px;
+                         max-width: calc(100vw - 32px);
                      }
                      #search-jumper #search-jumper-alllist.new-mode .sitelist a {
-                         width: calc(50vw - 45px);
+                         width: 100%;
+                         padding: 10px 0;
                      }
                      #search-jumper #search-jumper-alllist.new-mode .sitelist>.sitelistCon>div:before {
-                         width: 100px;
-                         margin-left: 68px;
+                         width: calc(100% - 64px);
+                         margin-left: 44px;
                      }
-                     #search-jumper #search-jumper-alllist.new-mode .sitelist a>img {
+                     #search-jumper #search-jumper-alllist.new-mode .sitelist a>div {
+                         width: 28px;
+                         height: 28px;
+                         padding: 6px;
+                         margin: 0;
+                     }
+                     #search-jumper #search-jumper-alllist.new-mode .sitelist a>div>img {
+                         width: 28px;
+                         height: 28px;
                          margin-left: 0;
                      }
-                 }
-                 @media screen and (max-width: 380px) {
-                     #search-jumper #search-jumper-alllist.new-mode .sitelist a {
-                         width: calc(100vw - 60px);
-                     }
-                     #search-jumper #search-jumper-alllist.new-mode .sitelist>.sitelistCon>div:before {
-                         width: calc(100vw - 150px);
-                         margin-left: 85px;
-                     }
-                     #search-jumper #search-jumper-alllist.new-mode .sitelist a+p {
-                         width: calc(100vw - 60px);
+                     #search-jumper #search-jumper-alllist.new-mode .sitelist a>p {
+                         margin-left: 44px;
                      }
                  }
                  @media screen and (max-width: 800px) {
@@ -3021,6 +4097,7 @@
                      }
                      .search-jumper-input {
                          min-width: 300px;
+                         margin-left: min(-25%, -150px);
                      }
                      .inputGroup>.svgBtns {
                          width: 25px;
@@ -3030,6 +4107,11 @@
                          height: 36px;
                          right: 2px;
                          top: 10px;
+                     }
+                 }
+                 @media screen and (max-width: 650px) {
+                     #search-jumper.search-jumper-showall>#search-jumper-alllist.new-mode+.groupTab {
+                         display: none;
                      }
                  }
                  .search-jumper-input .content-container {
@@ -3069,7 +4151,8 @@
                  .search-jumper-input svg:hover,
                  .searchJumperNavBar svg:hover,
                  .search-jumper-input>.closeBtn:hover,
-                 .searchJumperNavBar>div.minNavBtn:hover {
+                 .searchJumperNavBar>div.minNavBtn:hover,
+                 .searchJumperNavBar>div.maxNavBtn:hover {
                      -webkit-transform:scale(1.2);
                      -moz-transform:scale(1.2);
                      transform:scale(1.2);
@@ -3135,21 +4218,36 @@
                  #searchInPage>.lockWords>span>em {
                      cursor: alias;
                  }
-                 #searchInPage>.lockWords .removeWord {
+                 #searchInPage>.lockWords .lockWordTool {
                      position: absolute;
                      right: 0;
                      top: 0;
                      display: none;
                      opacity: 0.3;
+                     height: 15px;
+                     width: 15px;
+                     text-align: center;
+                     line-height: 15px;
+                     border-radius: 50%;
+                     background: black;
+                     color: white;
                  }
-                 #searchInPage>.lockWords .removeWord:hover {
+                 #searchInPage>.lockWords .lockWordTool>span {
+                     cursor: pointer;
+                     font-size: 15px;
+                 }
+                 #searchInPage>.lockWords .modifyBtn {
+                     top: unset;
+                     bottom: 0;
+                 }
+                 #searchInPage>.lockWords .lockWordTool:hover {
                      opacity: 1;
                  }
-                 #searchInPage>.lockWords>span:hover .removeWord {
+                 #searchInPage>.lockWords>span:hover .lockWordTool {
                      display: block;
                      pointer-events: all;
                  }
-                 #searchInPage>.lockWords .removeWord>svg {
+                 #searchInPage>.lockWords .lockWordTool>svg {
                      width: 15px;
                      height: 15px;
                      fill: black;
@@ -3171,15 +4269,16 @@
                      position: fixed;
                      width: 20px;
                      z-index: 2147483647;
-                     background: #00000066;
+                     background: #00000026;
                      text-align: center;
                      pointer-events: none;
                      font-size: 0px;
                      opacity: 0;
-                     transition: width 0.3s;
+                     transition: width 0.3s, background 0.3s;
                  }
                  .searchJumperNavBar:hover {
                      width: 25px;
+                     background: #00000066;
                  }
                  .searchJumperNavBar.sjNavShow {
                      pointer-events: all;
@@ -3195,7 +4294,8 @@
                      cursor: pointer;
                      display: inline-block;
                  }
-                 .searchJumperNavBar>.minNavBtn {
+                 .searchJumperNavBar>.minNavBtn,
+                 .searchJumperNavBar>.maxNavBtn {
                      font-size: 12px;
                      font-weight: bold;
                      font-family: system-ui;
@@ -3209,9 +4309,9 @@
                      display: inline-block;
                      cursor: pointer;
                      transition: 0.25s opacity ease, 0.25s transform ease;
-                     pointer-events: all;
                  }
-                 .searchJumperNavBar:hover>.minNavBtn {
+                 .searchJumperNavBar:hover>.minNavBtn,
+                 .searchJumperNavBar:hover>.maxNavBtn {
                      opacity: 0.8;
                  }
                  #search-jumper>.searchJumperNavBar.minimize {
@@ -3220,6 +4320,7 @@
                  }
                  .searchJumperNavBar.minimize>.closeNavBtn,
                  .searchJumperNavBar.minimize>.navPointer,
+                 .searchJumperNavBar.minimize>.maxNavBtn,
                  .searchJumperNavBar.minimize>#navMarks {
                      display: none;
                  }
@@ -3228,6 +4329,7 @@
                      box-shadow: 0px 0px 3px 1px #000;
                      margin-left: -50px;
                      margin-top: 5px;
+                     pointer-events: all;
                  }
                  .search-jumper-right>.searchJumperNavBar.minimize>.minNavBtn {
                      margin-left: unset;
@@ -3258,9 +4360,9 @@
                      100% {right: 20px;}
                  }
                  #navMarks {
-                     height: calc(100% - 32px);
+                     height: calc(100% - 50px);
                      width: 100%;
-                     position: absolute;
+                     position: relative;
                  }
                  #navMarks>span {
                      height: 0.5vh;
@@ -3278,7 +4380,7 @@
                      position: absolute;
                      min-height: 10px;
                      min-width: 10px;
-                     animation-duration: 3s;
+                     animation-duration: 2s;
                      z-index: 2147483647;
                      margin: 0;
                      opacity: 0;
@@ -3295,8 +4397,9 @@
                      position: fixed;
                  }
                  @keyframes fadeit {
-                     from {opacity: 1;}
-                     to {opacity: 0;}
+                     0% {opacity: 1;}
+                     50% {opacity: 0.8;}
+                     100% {opacity: 0;}
                  }
                  #rightSizeChange {
                      top: 0;
@@ -3319,7 +4422,6 @@
                      min-width: auto;
                      min-height: auto;
                      flex-shrink: 0;
-                     border-radius: 50%;
                  }
                  .search-jumper-historylist>a.search-jumper-btn>img {
                      width: 32px;
@@ -3354,21 +4456,28 @@
                      border-top-color: white;
                  }
                  @media (prefers-color-scheme: dark) {
-                     /* 站点列表 */
-                     #search-jumper .sitelist > .sitelistCon > p {
-                         background-color: #252B32 !important;
-                     }
                      #search-jumper.search-jumper-showall #filterSites {
-                         background-color: #2a282cc0;
+                         background-color: #1c2127ee;
+                         box-shadow: 0 2px 12px #00000026, inset 0 0 0 1px #ffffff1a;
                      }
                      #search-jumper.search-jumper-showall #filterSites>input,
                      #search-jumper.search-jumper-showall #filterSites>textarea {
-                         background-color: #000000;
-                         color: white;
+                         background-color: #181c20;
+                         color: #d3d8df;
                      }
 
                      #search-jumper .sitelist > .sitelistCon {
                          background-color: #1C2127ee !important;
+                         box-shadow: 0 4px 16px #00000033, inset 0 0 0 1px #ffffff1a;
+                     }
+                     #search-jumper.search-jumper-showall .sitelist > .sitelistCon {
+                         background-color: #1C2127b3 !important;
+                     }
+                     #search-jumper.search-jumper-showall .sitelist > .sitelistCon:hover {
+                         background-color: #1C2127dd !important;
+                     }
+                     #search-jumper.search-jumper-showall #search-jumper-alllist.new-mode .sitelist>.sitelistCon:hover {
+                         background-color: #1C212788 !important;
                      }
 
                      #search-jumper .sitelist > .sitelistCon > div:hover {
@@ -3377,7 +4486,10 @@
 
                      #search-jumper .sitelist > .sitelistCon > p,
                      #search-jumper .sitelist a > p {
-                         color: #DADADA !important;
+                         color: #d3d8df !important;
+                     }
+                     #search-jumper #search-jumper-alllist.new-mode .sitelist a:hover>p {
+                         color: #f1404b !important;
                      }
                      #search-jumper .listArrow {
                          border-bottom-color: #1C2127;
@@ -3397,25 +4509,20 @@
 
                      /* 历史列表 */
                      .search-jumper-historylistcon {
-                         background-color: #181C20e0 !important;
+                         background-color: #181C2060 !important;
+                         border-bottom: 1px solid #252b32;
                      }
 
                      .search-jumper-historylist>a.search-jumper-btn {
-                         filter: drop-shadow(0px 0px 3px #ffffff50);
-                     }
-
-                     .search-jumper-showall a.search-jumper-word,
-                     .search-jumper-showall a.search-jumper-word > span {
-                         background-color: #292A2D !important;
+                         filter: drop-shadow(0px 0px 2px #ffffff80);
                      }
 
                      .search-jumper-tips {
-                         background-color: #3F4042e0;
+                         background-color: #3F4042f0;
                          color: #DADADA;
                      }
-
-                     .search-jumper-showall a.search-jumper-word > span {
-                         color: #DADADA !important;
+                     .search-jumper-tips>*:not(font) {
+                         color: white;
                      }
 
                      .search-jumper-showall .search-jumper-word:hover {
@@ -3427,21 +4534,32 @@
                      .search-jumper-showall .search-jumper-logo {
                          background-color: #181C20 !important;
                      }
+
+                     #search-jumper.search-jumper-showall>.groupTab {
+                         background: #1C2127ee !important;
+                     }
+                     #search-jumper.search-jumper-showall>.groupTab>span:hover{
+                         background: #283C57 !important;
+                     }
+                     #search-jumper.search-jumper-showall>.groupTab:hover>span::after {
+                         color: white;
+                     }
                  }
                  `;
                 this.inPageCss = `
                  mark.searchJumper,
                  a.searchJumper {
                      visibility: inherit;
-                     font-style: normal;
+                     font-style: inherit;
                      box-shadow: rgba(0, 0, 0, 0.3) 1px 1px 3px;
                      border-radius: 3px;
                      text-decoration: none;
                      padding: 1px 0;
                      -webkit-text-fill-color: initial;
                      text-shadow: initial;
-                     min-width: inherit;
+                     min-width: initial;
                      display: inline;
+                     margin: initial;
                  }
                  mark.searchJumper:before,
                  a.searchJumper:before,
@@ -3462,12 +4580,31 @@
                      to {border-color: transparent;}
                  }
                 `;
+                this.appearanceCssText = cssText;
                 if (searchData.prefConfig.cssText) cssText += searchData.prefConfig.cssText;
+
+                let bar = document.createElement("span");
+                bar.className = "search-jumper-searchBar";
+
+                let tileInput = document.createElement("input");
+                tileInput.id = "search-jumper-tileInput";
+                tileInput.addEventListener("mousedown", e => {
+                    e && e.stopPropagation && e.stopPropagation();
+                }, true);
+                let tileInputTimer;
+                tileInput.addEventListener("input", e => {
+                    clearTimeout(tileInputTimer);
+                    tileInputTimer = setTimeout(() => {
+                        let targetType = self.bar.querySelector(`.search-jumper-open>span:first-child`);
+                        targetType && targetType.dispatchEvent(new CustomEvent("checkSites", {detail: tileInput.value}));
+                    }, 500);
+                }, true);
+                this.tileInput = tileInput;
 
                 let logoCon = document.createElement("span");
                 logoCon.className = "search-jumper-logo";
                 logoBtn = document.createElement("span");
-                logoBtn.innerHTML = createHTML(logoBtnSvg);
+                setHTML(logoBtn, logoBtnSvg);
                 logoBtn.className = "search-jumper-btn";
                 logoCon.addEventListener('mouseenter', e => {
                     if (this.preList) {
@@ -3478,8 +4615,6 @@
 
                 logoCon.appendChild(logoBtn);
 
-                let bar = document.createElement("span");
-                bar.className = "search-jumper-searchBar";
                 bar.appendChild(logoCon);
 
                 let searchBarCon = document.createElement("div");
@@ -3493,6 +4628,11 @@
                 alllist.id = "search-jumper-alllist";
                 searchBarCon.appendChild(alllist);
                 this.alllist = alllist;
+
+                let groupTab = document.createElement("span");
+                groupTab.className = "groupTab";
+                searchBarCon.appendChild(groupTab);
+                this.groupTab = groupTab;
 
                 let showallBg = document.createElement("div");
                 showallBg.className = "search-jumper-showallBg";
@@ -3528,28 +4668,57 @@
                     target.initedTag = true;
                 });
 
+                const clockInAll = document.createElement('div');
+                clockInAll.className = 'clockInAll';
+                alllist.appendChild(clockInAll);
                 let timeInAll = document.createElement("span");
                 timeInAll.className = "timeInAll";
-                alllist.appendChild(timeInAll);
+                clockInAll.appendChild(timeInAll);
                 this.timeInAll = timeInAll;
 
                 this.modeSwitch = document.createElement("div");
                 this.modeSwitch.className = "modeSwitch";
-                this.modeSwitch.innerHTML = createHTML(`<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" version="1.1"><rect height="450" width="520" y="287" x="253" fill="#fff"></rect><path d="m511.8,64.2c-247.5,0 -448.2,200.7 -448.2,448.2s200.7,448.2 448.2,448.2s448.2,-200.6 448.2,-448.2s-200.7,-448.2 -448.2,-448.2zm-260.4,353.9c0,-7.8 6.3,-14.2 14.2,-14.2l315.6,0l0,-102.5c0,-12.3 14.7,-18.8 23.7,-10.4l165.1,151.7c9.5,8.7 3.3,24.6 -9.6,24.6l-495,0c-7.8,0 -14.2,-6.3 -14.2,-14.2l0,-35l0.2,0zm523.2,188.5c0,7.8 -6.3,14.2 -14.2,14.2l-315.5,0l0,102.6c0,12.3 -14.7,18.8 -23.7,10.4l-165.2,-151.8c-9.5,-8.7 -3.3,-24.6 9.6,-24.6l495,0c7.8,0 14.2,6.3 14.2,14.2l0,35l-0.2,0z"></path></svg>`);
+                setHTML(this.modeSwitch, `<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" version="1.1"><rect height="450" width="520" y="287" x="253" fill="#fff"></rect><path d="m511.8,64.2c-247.5,0 -448.2,200.7 -448.2,448.2s200.7,448.2 448.2,448.2s448.2,-200.6 448.2,-448.2s-200.7,-448.2 -448.2,-448.2zm-260.4,353.9c0,-7.8 6.3,-14.2 14.2,-14.2l315.6,0l0,-102.5c0,-12.3 14.7,-18.8 23.7,-10.4l165.1,151.7c9.5,8.7 3.3,24.6 -9.6,24.6l-495,0c-7.8,0 -14.2,-6.3 -14.2,-14.2l0,-35l0.2,0zm523.2,188.5c0,7.8 -6.3,14.2 -14.2,14.2l-315.5,0l0,102.6c0,12.3 -14.7,18.8 -23.7,10.4l-165.2,-151.8c-9.5,-8.7 -3.3,-24.6 9.6,-24.6l495,0c7.8,0 14.2,6.3 14.2,14.2l0,35l-0.2,0z"></path></svg>`);
                 alllist.appendChild(this.modeSwitch);
                 this.modeSwitch.addEventListener("click", e => {
+                    e.preventDefault();
+                    e.stopPropagation();
                     alllist.classList.toggle("new-mode");
+                    alllist.classList.remove("showbg");
                     storage.setItem("allPageNewMode", alllist.classList.contains("new-mode"));
+                });
+                this.modeSwitch.addEventListener("mouseenter", e => {
+                    if (allPageBgUrl) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        alllist.classList.add("showbg");
+                    }
+                });
+                this.modeSwitch.addEventListener("mouseleave", e => {
+                    if (allPageBgUrl) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        alllist.classList.remove("showbg");
+                    }
+                });
+                this.modeSwitch.addEventListener("contextmenu", e => {
+                    if (allPageBgUrl) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        alllist.classList.remove("showbg");
+                        _GM_openInTab(allPageBgUrl, {active: true, insert: true});
+                    }
                 });
                 if (allPageNewMode) alllist.classList.add("new-mode");
 
                 let dayInAll = document.createElement("span");
                 dayInAll.className = "dayInAll";
-                alllist.appendChild(dayInAll);
+                clockInAll.appendChild(dayInAll);
                 this.dayInAll = dayInAll;
 
                 alllist.addEventListener(getSupportWheelEventName(), e => {
-                    if (e.target != alllist && e.target != showallBg && e.target != sitelistBox) return;
+                    self.tips.style.display = "none";
+                    clearTimeout(self.requestShowTipsTimer);
                     if (alllist.classList.contains("new-mode")) return;
                     var deltaX, deltaY;
                     if(e.type !== 'wheel'){
@@ -3574,18 +4743,19 @@
                         deltaX = e.deltaX;
                         deltaY = e.deltaY;
                     }
+                    if (e.target != alllist && e.target != showallBg && e.target != sitelistBox && deltaY) return;
                     e.preventDefault();
                     e.stopPropagation();
 
-                    alllist.scrollLeft += deltaY;
+                    alllist.scrollLeft += (deltaX || deltaY);
                 }, { passive: false, capture: false });
 
 
                 let logoConfigBtn = document.createElement("span");
-                logoConfigBtn.innerHTML = createHTML(logoBtnSvg);
+                setHTML(logoConfigBtn, logoBtnSvg);
                 logoConfigBtn.className = "search-jumper-btn";
                 logoConfigBtn.addEventListener('click', e => {
-                    _GM_openInTab(configPage, {active: true});
+                    _GM_openInTab(configPage, {active: true, insert: true});
                 });
                 alllist.appendChild(logoConfigBtn);
 
@@ -3609,12 +4779,16 @@
                         bar.classList.remove("initShow");
                     }
                 }, false);
-                if (searchData.prefConfig.mouseLeaveToHide) {
-                    bar.addEventListener('mouseleave', e => {
+                bar.addEventListener('mouseleave', e => {
+                    if (searchData.prefConfig.mouseLeaveToHide) {
                         if (bar.classList.contains("grabbing")) return;
-                        this.waitForHide();
-                    }, false);
-                }
+                        self.waitForHide();
+                    }
+                    if (self.preList) {
+                        self.preList.style.visibility = "hidden";
+                        self.listArrow.style.cssText = "";
+                    }
+                }, false);
 
                 this.touched = true;
                 if (searchData.prefConfig.initShow) {
@@ -3624,6 +4798,7 @@
                 }
                 if (searchData.prefConfig.minSizeMode) {
                     bar.classList.add("minSizeMode");
+                    bar.classList.add("minSizeModeClose");
                 }
                 if (isMobile && !searchData.prefConfig.resizePage) {
                     let touchBodyHandler = e => {
@@ -3650,6 +4825,105 @@
                 tips.className = "search-jumper-tips";
                 tips.style.opacity = 0;
                 searchBarCon.appendChild(tips);
+                tips.addEventListener('mouseenter', e => {
+                    if (self.hideTimeout) {
+                        clearTimeout(self.hideTimeout);
+                    }
+                }, false);
+                tips.addEventListener('click', e => {
+                    if (dragMoved && e.detail) {
+                        dragMoved = false;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        return;
+                    }
+                    let dataset = e.target.dataset;
+                    let text = e.target.innerText;
+                    if (!dataset) return;
+                    if (typeof dataset.read !== 'undefined') {
+                        let msg = new SpeechSynthesisUtterance("");
+                        msg.volume = dataset.volume || 1;
+                        msg.rate = dataset.rate || 1;
+                        msg.pitch = dataset.pitch || 1;
+                        msg.lang = dataset.lang || "";
+                        msg.text = dataset.read || text;
+                        window.speechSynthesis.speak(msg);
+                    }
+                    if (typeof dataset.copy !== 'undefined') {
+                        _GM_setClipboard(dataset.copy || text);
+                    }
+                    if (dataset.search) {
+                        extSelectionText = text;
+                        self.searchBySiteName(dataset.search);
+                    }
+                    if (typeof dataset.paste !== 'undefined') {
+                        if (targetElement &&
+                            ((/INPUT|TEXTAREA/i.test(targetElement.nodeName) &&
+                              targetElement.getAttribute("aria-readonly") != "true"
+                             ) ||
+                             targetElement.contentEditable == 'true'
+                            )
+                           ) {
+                            triggerPaste(targetElement, dataset.paste || text);
+                        }
+                    }
+                    if (typeof dataset.close !== 'undefined') {
+                        self.tips.style.opacity = 0;
+                        self.tips.style.display = "none";
+                        setHTML(self.tips, "");
+                    }
+                }, false);
+                let startMouse, startPos, dragTarget, dragMoved = false, mouseMoveHandler = e => {
+                    if (!dragTarget || e.pointerId !== startMouse.id) return;
+                    let curX = clientX(e) - startMouse.x;
+                    let curY = clientY(e) - startMouse.y;
+                    if (Math.abs(curX) + Math.abs(curY) < 5) return;
+                    if (tips.style.right === "") {
+                        tips.style.setProperty("left", (startPos.left + curX) + "px", "important");
+                        //tips.style.left = (startPos.left + curX) + "px!important";
+                    } else {
+                        tips.style.setProperty("right", (startPos.right - curX) + "px", "important");
+                        //tips.style.right = (startPos.right - curX) + "px!important";
+                    }
+                    if (tips.style.bottom === "") {
+                        tips.style.setProperty("top", (startPos.top + curY) + "px", "important");
+                        //tips.style.top = (startPos.top + curY) + "px!important";
+                    } else {
+                        tips.style.setProperty("bottom", (startPos.bottom - curY) + "px", "important");
+                        //tips.style.bottom = (startPos.bottom - curY) + "px!important";
+                    }
+                    dragMoved = true;
+                };
+                let mouseUpHandler = e => {
+                    if (!dragTarget || e.pointerId !== startMouse.id) return;
+                    if (dragTarget.hasPointerCapture(e.pointerId)) dragTarget.releasePointerCapture(e.pointerId);
+                    dragTarget = null;
+                    tips.classList.remove("draging");
+                };
+                tips.addEventListener('pointerdown', e => {
+                    if (e.button !== 0 || !e.isPrimary) return;
+                    dragMoved = false;
+                    if (e.target !== tips && !e.target.closest('[data-drag]')) return;
+                    if (e.target.closest('button, input, textarea, select, [data-close]')) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    startMouse = {x: clientX(e), y: clientY(e), id: e.pointerId};
+                    let tipsStyle = getComputedStyle(tips);
+                    startPos = {
+                        left: parseFloat(tipsStyle.left),
+                        right: parseFloat(tipsStyle.right),
+                        top: parseFloat(tipsStyle.top),
+                        bottom: parseFloat(tipsStyle.bottom)
+                    };
+                    // Keep receiving movement and release when the pointer crosses an iframe.
+                    dragTarget = e.target;
+                    tips.classList.add("draging");
+                    dragTarget.setPointerCapture(e.pointerId);
+                });
+                tips.addEventListener('pointermove', mouseMoveHandler);
+                tips.addEventListener('pointerup', mouseUpHandler);
+                tips.addEventListener('pointercancel', mouseUpHandler);
+                tips.addEventListener('lostpointercapture', mouseUpHandler);
                 this.tips = tips;
 
                 //this.appendBar();
@@ -3657,10 +4931,11 @@
                 let searchJumperNavBar = document.createElement("div");
                 searchJumperNavBar.className = "searchJumperNavBar";
                 searchJumperNavBar.style.display = "none";
-                searchJumperNavBar.innerHTML = createHTML(`
+                setHTML(searchJumperNavBar, `
                   <svg class="closeNavBtn" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"><title>Close navigation</title>${closePath}</svg>
                   <div class="minNavBtn" title="Minimize navigation">-</div>
                   <div id="navMarks"></div>
+                  <div class="maxNavBtn" title="Restore input"><img src="${logoBase64}" /></div>
                   <div class="navPointer">></div>
                 `);
                 searchBarCon.appendChild(searchJumperNavBar);
@@ -3668,7 +4943,7 @@
                 let searchJumperExpand = document.createElement("span");
                 searchJumperExpand.title = i18n('expand');
                 searchJumperExpand.className = "searchJumperExpand search-jumper-btn";
-                searchJumperExpand.innerHTML = createHTML(`
+                setHTML(searchJumperExpand, `
                 <svg viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"><rect height="450" width="600" y="300" x="200" fill="#fff"></rect><path d="M512 64C264.8 64 64 264.8 64 512s200.8 448 448 448 448-200.8 448-448S759.2 64 512 64z m0 640L240 432l45.6-45.6L512 613.6l226.4-226.4 45.6 45.6L512 704z"></path></svg>
                 `);
                 this.searchJumperExpand = searchJumperExpand;
@@ -3676,13 +4951,14 @@
                 this.navMarks = searchJumperNavBar.querySelector("#navMarks");
                 this.closeNavBtn = searchJumperNavBar.querySelector(".closeNavBtn");
                 this.minNavBtn = searchJumperNavBar.querySelector(".minNavBtn");
+                this.maxNavBtn = searchJumperNavBar.querySelector(".maxNavBtn");
                 this.searchJumperNavBar = searchJumperNavBar;
                 this.navPointer = searchJumperNavBar.querySelector(".navPointer");
                 this.navPointer.style.display = "none";
 
                 let searchInputDiv = document.createElement("div");
                 searchInputDiv.className = "search-jumper-input";
-                searchInputDiv.innerHTML = createHTML(`<span class="closeBtn">×</span>
+                setHTML(searchInputDiv, `<span class="closeBtn">×</span>
                 <input type="radio" id="filterSitesTab" name="tab" ${searchData.prefConfig.defaultFindTab? "" : "checked=\"checked\""} />
                 <label for="filterSitesTab">${i18n("filterSites")}</label>
                 <input type="radio" id="searchInPageTab" name="tab" ${searchData.prefConfig.defaultFindTab? "checked=\"checked\"" : ""} />
@@ -3754,7 +5030,7 @@
                 this.filterGlob = searchInputDiv.querySelector("#filterGlob");
                 this.suggestDatalist = searchInputDiv.querySelector("#suggest");
                 this.addonsList = searchInputDiv.querySelector("#addons");
-                this.fakeTextareas = {};
+                this.fakeTextareas = new Map();
                 this.addonCheckboxDict = {};
             }
 
@@ -3762,6 +5038,8 @@
                 this.searchInPageTab.checked = true;
                 this.showSearchInput();
                 this.initSetInPageWords();
+                this.searchJumperInPageInput.value = "";
+                this.initShowSearchInput = true;
             }
 
             showFilterSearch() {
@@ -3771,7 +5049,7 @@
 
             initSetInPageWords() {
                 if (this.searchInPageTab.checked && !this.searchJumperInPageInput.value) {
-                    let words = this.searchJumperInputKeyWords.value.replace(/^\*/, "") || getKeywords();
+                    let words = getSelectStr() || this.searchJumperInputKeyWords.value.replace(/^\*/, "") || getKeywords();
                     if (words) {
                         try {
                             words = decodeURIComponent(words);
@@ -3867,7 +5145,7 @@
                             showWords = word;
                             let wordTemp = searchData.prefConfig.inPageRule && searchData.prefConfig.inPageRule[word];
                             if (wordTemp) word = wordTemp;
-                            else return;
+                            //else return;
                         } else {
                             word = word.replace(/^\\@/, "@");
                         }
@@ -3922,21 +5200,21 @@
                     } else this.splitSep = "◎";
                     this.curWordIndex = 0;
                 }
+                this.searchJumperInPageInput.value = "";
                 let targetWords = this.anylizeInPageWords(words, this.initHighlight);
                 if (!targetWords || targetWords.length == 0) return wordSpans;
                 if (this.lockWords) {
-                    this.lockWords += this.splitSep + words;
+                    this.lockWords += (this.lockWords.indexOf(this.splitSep) === this.lockWords.length - this.splitSep.length ? "" : this.splitSep) + words;
                 } else this.lockWords = words;
-                this.searchJumperInPageInput.value = "";
                 if (!this.splitSep) {
-                    this.searchInPageLockWords.innerHTML = createHTML();
+                    setHTML(this.searchInPageLockWords, "");
                     this.highlight("");
                 }
                 this.highlight(targetWords);
                 targetWords.forEach(word => {
                     if (!word) return;
                     let wordSpan = document.createElement("span");
-                    wordSpan.innerHTML = createHTML(word.showWords);
+                    setHTML(wordSpan, word.showWords);
                     wordSpan.title = word.title ? JSON.parse('"' + word.title + '"') : word.showWords;
                     let background = word.style.match(/background: *(#?\w+)/);
                     if (background && background[1].indexOf('unset') === -1) wordSpan.style.background = background[1];
@@ -4015,9 +5293,22 @@
                         wordSpan.parentNode.removeChild(wordSpan);
                         this.removeHighlightWord(word);
                     });
-                    removeBtn.className = "removeWord";
-                    removeBtn.innerHTML = createHTML(`<svg viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"><title>${i18n("removeBtn")}</title>${closePath}</svg>`);
+                    removeBtn.className = "lockWordTool";
+                    setHTML(removeBtn, `<span title="${i18n("removeBtn")}">×</span>`);
                     wordSpan.appendChild(removeBtn);
+
+                    let modifyBtn = document.createElement("div");
+                    modifyBtn.addEventListener("mousedown", e => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        if (this.lockWords.indexOf(word.oriWord) === -1) {
+                            return;
+                        }
+                        this.showModifyWindow(word, wordSpan);
+                    });
+                    modifyBtn.className = "lockWordTool modifyBtn";
+                    setHTML(modifyBtn, `<span>+</span>`);
+                    wordSpan.appendChild(modifyBtn);
 
                     let curList = this.marks[word.showWords];
                     this.setHighlightSpan(wordSpan, -1, curList);
@@ -4037,12 +5328,14 @@
                     this.customInputCallback = callback;
                     let geneFinalUrl = () => {
                         let finalValue = this.finalSearch.dataset.url;
+                        let index = 0;
                         [].forEach.call(this.customGroup.children, ele => {
                             let value = ele.value;
                             if (ele.className == "select") {
                                 value = ele.children[0].value;
                             } else if (/^DIV$/i.test(ele.nodeName)) return;
-                            finalValue = finalValue.replace('◎', value || '');
+                            finalValue = finalValue.replaceAll('◎' + index, value || '');
+                            index++;
                         });
                         this.finalSearch.value = finalValue;
                     };
@@ -4059,12 +5352,13 @@
                              margin-left: -150px;
                              z-index: 2147483647;
                              background-color: #ffffff;
-                             border: 1px solid #afb3b6;
+                             border: 1px solid #282a2d1a;
                              border-radius: 10px;
-                             opacity: 0.95;
-                             filter: alpha(opacity=95);
-                             box-shadow: 5px 5px 20px 0px #000;
-                             color: #6e7070;
+                             opacity: 1;
+                             color-scheme: light dark;
+                             box-shadow: 0 12px 40px #20263133;
+                             color: #282a2d;
+                             font-family: Arial, "Microsoft YaHei", "Noto Sans SC", sans-serif;
                              font-size: initial;
                          }
                          .customInputFrame-body #customGroup {
@@ -4077,13 +5371,13 @@
                              height: 0 !important;
                          }
                          .customInputFrame-title {
-                             background: #458bd1!important;
+                             background: #357dc5!important;
                              display: flex!important;
                              align-items: center!important;
                              justify-content: center!important;
                              color: white!important;
                              font-weight: bold;
-                             font-size: 18px!important;
+                             font-size: 16px!important;
                              border-radius: 10px 10px 0 0!important;
                          }
                          .customInputFrame-title>img {
@@ -4093,7 +5387,7 @@
                          }
                          .customInputFrame-input-title {
                              font-size: 9pt;
-                             font-family: Arial, sans-serif;
+                             font-family: Arial, sans-serif,微软雅黑,"Noto Sans SC";
                              display: inline-block;
                              background-color: white;
                              position: relative;
@@ -4112,8 +5406,8 @@
                              resize: both;
                              font-size: 11pt;
                              font-weight: normal;
-                             border-radius: 4px;
-                             border: 1px solid rgba(0, 0, 0, 0.23);
+                             border-radius: 8px;
+                             border: 1px solid #282a2d26;
                              margin: 4px;
                              font-family: inherit;
                              background-color: #FFF;
@@ -4126,20 +5420,21 @@
                          }
                          .customInputFrame-buttons {
                              text-align: center;
-                             margin-bottom: 5px;
+                             margin: 8px 4px;
                              display: flex;
                              justify-content: space-evenly;
                          }
                          .customInputFrame-buttons>button {
                              width: 32%;
-                             font-size: 16px;
+                             font-size: 14px;
                              cursor: pointer;
                              border: 1px solid #1976d2;
-                             border-radius: 4px;
-                             transition: all .3s;
+                             border-radius: 8px;
+                             transition: background-color .15s, box-shadow .15s;
                              color: #fff;
-                             background-color: #458bd1;
+                             background-color: #357dc5;
                              line-height: 25px;
+                             min-height: 32px;
                          }
                          .customInputFrame-buttons>button:hover {
                              color: #e3f2fd;
@@ -4159,6 +5454,7 @@
                              float: left;
                              background: unset;
                              height: 28px;
+                             outline: unset;
                          }
                          .customInputFrame-body .select>p {
                              padding: 0;
@@ -4173,8 +5469,8 @@
                              transition: opacity .1s;
                              background-color: #FFF;
                              color: #4A4A4A;
-                             border: 1px solid rgba(0, 0, 0, 0.23);
-                             border-radius: 4px;
+                             border: 1px solid #282a2d26;
+                             border-radius: 8px;
                              z-index: 10;
                              width: auto;
                              max-width: 35%;
@@ -4211,40 +5507,40 @@
                            .customInputFrame-body input,
                            .customInputFrame-body textarea,
                            .customInputFrame-body .select {
-                             background-color: black!important;
-                             color: #d5d5d5!important;
+                             background-color: #1c2127!important;
+                             color: #d3d8df!important;
                            }
                            .customInputFrame-body input:focus,
                            .customInputFrame-body textarea:focus,
                            .customInputFrame-body .select:focus {
-                             background-color: #1e1e1e!important;
+                             background-color: #283340!important;
                            }
                            .customInputFrame-body input,
                            .customInputFrame-body textarea,
                            .customInputFrame-body .select {
-                             border: 1px solid rgb(255 255 255 / 36%)!important;
-                             background-color: #0c0c0c!important;
+                             border: 1px solid #ffffff33!important;
+                             background-color: #181c20!important;
                            }
                            .customInputFrame-title,
                            .customInputFrame-buttons>button {
-                             background: #245d8f!important;
+                             background: #2a5c8d!important;
                            }
                            .customInputFrame-body .select>.options {
-                             border: 1px solid rgb(255 255 255 / 36%)!important;
-                             background-color: black;
-                             color: #d5d5d5;
+                             border: 1px solid #ffffff33!important;
+                             background-color: #1c2127;
+                             color: #d3d8df;
                            }
                            .customInputFrame-body .select>.options>p:hover {
-                             background: #1e1e1e;
+                             background: #283340;
                            }
                          }
                         `;
                         let customInputCssEle = _GM_addStyle(customInputCssText);
                         let customInputFrame = document.createElement("div");
                         this.customInputFrame = customInputFrame;
-                        customInputFrame.innerHTML = createHTML(`
+                        setHTML(customInputFrame, `
                          <div class="customInputFrame-body">
-                             <a href="${configPage}" class="customInputFrame-title" target="_blank">
+                             <a href="${homePage}" class="customInputFrame-title" target="_blank">
                                  <img width="32px" height="32px" src="${logoBase64}" />${i18n("customInputFrame")}
                              </a>
                              <div id="customGroup">
@@ -4264,6 +5560,11 @@
                                 customInputFrame.parentNode.removeChild(customInputFrame);
                             }
                             resolve("");
+                        });
+                        customInputFrame.addEventListener("keydown", e => {
+                            if (e.keyCode == 13) {
+                                customSubmit.click();
+                            }
                         });
                         let customGroup = this.customInputFrame.querySelector("#customGroup");
                         this.customGroup = customGroup;
@@ -4287,10 +5588,13 @@
                     if (this.customInputFrame.parentNode) {
                         this.customInputFrame.parentNode.removeChild(this.customInputFrame);
                     }
-                    this.customGroup.innerHTML = createHTML();
+                    setHTML(this.customGroup, "");
                     let tempUrl = url;
                     let inputMatch = tempUrl.match(/%input{(.*?[^\\])}/);
+                    let index = 0;
                     while (inputMatch) {
+                        let inputTitle = document.createElement('div');
+                        inputTitle.className = 'customInputFrame-input-title';
                         let param = inputMatch[1];
                         if (/^".*","/.test(param)) {
                             param = param.substr(1, param.length - 2).split('","');
@@ -4299,8 +5603,6 @@
                         }
                         if (param.length === 1) {//input
                             param = param[0].replace(/\\\|/g, "◎SJ").split("|").map(str => str.replace(/◎SJ/g, "|"));
-                            let inputTitle = document.createElement('div');
-                            inputTitle.className = 'customInputFrame-input-title';
                             inputTitle.innerText = param[0];
                             this.customGroup.appendChild(inputTitle);
                             let paramInput = document.createElement('input');
@@ -4321,8 +5623,6 @@
                                 optionSplit = optionSplit.replace(/\\\//g, "◎SJ").split("/").map(str => str.replace(/◎SJ/g, "/"));
                             }
                             let singleTitle = titleSplit.length === optionSplit.length + 1;
-                            let inputTitle = document.createElement('div');
-                            inputTitle.className = 'customInputFrame-input-title';
                             inputTitle.innerText = titleSplit[0];
                             this.customGroup.appendChild(inputTitle);
                             let paramSelectInput = document.createElement('input');
@@ -4341,9 +5641,13 @@
 
                             let option = document.createElement("p");
                             option.setAttribute("value", "");
-                            option.innerHTML = createHTML('<b>Select option</b>');
+                            setHTML(option, '<b>Select option</b>');
                             options.appendChild(option);
                             option.addEventListener("click", e => {
+                                options.style.visibility = "hidden";
+                                setTimeout(() => {
+                                    options.style.visibility = "";
+                                }, 0);
                                 paramSelectInput.value = "";
                                 selectTips.innerText = 'Select option';
                                 geneFinalUrl();
@@ -4364,6 +5668,10 @@
                                     option.innerText = value;
                                 }
                                 option.addEventListener("click", e => {
+                                    options.style.visibility = "hidden";
+                                    setTimeout(() => {
+                                        options.style.visibility = "";
+                                    }, 0);
                                     paramSelectInput.value = option.getAttribute("value");
                                     selectTips.innerText = '';
                                     geneFinalUrl();
@@ -4379,7 +5687,8 @@
                             });
                             this.customGroup.appendChild(paramSelect);
                         }
-                        tempUrl = tempUrl.replace(inputMatch[0], '◎');
+                        tempUrl = tempUrl.replace(inputMatch[0], '◎' + index).replaceAll(`input{${inputTitle.innerText}}`, '◎' + index);
+                        index++;
                         inputMatch = tempUrl.match(/%input{(.*?[^\\])}/);
                     }
                     this.finalSearch.dataset.url = tempUrl;
@@ -4413,21 +5722,22 @@
                         margin-left: -150px;
                         z-index: 100000;
                         background-color: #ffffff;
-                        border: 1px solid #afb3b6;
+                        border: 1px solid #282a2d1a;
                         border-radius: 10px;
-                        opacity: 0.95;
-                        filter: alpha(opacity=95);
-                        box-shadow: 5px 5px 20px 0px #000;
-                        color: #6e7070;
+                        opacity: 1;
+                        color-scheme: light dark;
+                        box-shadow: 0 12px 40px #20263133;
+                        color: #282a2d;
+                        font-family: Arial, "Microsoft YaHei", "Noto Sans SC", sans-serif;
                     }
                     .searchJumperModify-title {
-                        background: #458bd1!important;
+                        background: #357dc5!important;
                         display: flex!important;
                         align-items: center!important;
                         justify-content: center!important;
                         color: white!important;
                         font-weight: bold;
-                        font-size: 18px!important;
+                        font-size: 16px!important;
                         border-radius: 10px 10px 0 0!important;
                     }
                     .searchJumperModify-title>img {
@@ -4437,7 +5747,7 @@
                     }
                     .searchJumperModify-input-title {
                         font-size: 9pt;
-                        font-family: Arial, sans-serif;
+                        font-family: Arial, sans-serif,微软雅黑,"Noto Sans SC";
                         display: inline-block;
                         background-color: white;
                         position: relative;
@@ -4452,8 +5762,8 @@
                         resize: both;
                         font-size: 11pt;
                         font-weight: normal;
-                        border-radius: 4px;
-                        border: 1px solid rgba(0, 0, 0, 0.23);
+                        border-radius: 8px;
+                        border: 1px solid #282a2d26;
                         margin: 4px;
                         font-family: inherit;
                         background-color: #FFF;
@@ -4466,20 +5776,21 @@
                     }
                     .searchJumperModify-buttons {
                         text-align: center;
-                        margin-bottom: 5px;
+                        margin: 8px 4px;
                         display: flex;
                         justify-content: space-evenly;
                     }
                     .searchJumperModify-buttons>button {
                         width: 32%;
-                        font-size: 16px;
+                        font-size: 14px;
                         cursor: pointer;
                         border: 1px solid #1976d2;
-                        border-radius: 4px;
-                        transition: all .3s;
+                        border-radius: 8px;
+                        transition: background-color .15s, box-shadow .15s;
                         color: #fff;
-                        background-color: #458bd1;
+                        background-color: #357dc5;
                         line-height: 25px;
+                        min-height: 32px;
                     }
                     .searchJumperModify-buttons>button:hover {
                         color: #e3f2fd;
@@ -4510,22 +5821,22 @@
                       .searchJumperModify-body>input[type=number],
                       .searchJumperModify-body>textarea,
                       .searchJumperModify-body>select {
-                        background-color: black!important;
-                        color: #d5d5d5!important;
+                        background-color: #1c2127!important;
+                        color: #d3d8df!important;
                       }
                       .searchJumperModify-body>input:focus,
                       .searchJumperModify-body>textarea:focus,
                       .searchJumperModify-body>select:focus {
-                        background-color: #1e1e1e!important;
+                        background-color: #283340!important;
                       }
                       .searchJumperModify-body>input[type=text],
                       .searchJumperModify-body>input[type=number],
                       .searchJumperModify-body>textarea {
-                        border: 1px solid rgb(255 255 255 / 36%)!important;
+                        border: 1px solid #ffffff33!important;
                       }
                       .searchJumperModify-title,
                       .searchJumperModify-buttons>button {
-                        background: #245d8f!important;
+                        background: #2a5c8d!important;
                       }
                       #rangePickerBtn {
                         background: rgb(0 0 0 / 80%);
@@ -4537,9 +5848,9 @@
                     let modifyFrame = document.createElement("div");
                     this.modifyFrame = modifyFrame;
                     modifyFrame.id = "searchJumperModifyWord";
-                    modifyFrame.innerHTML = createHTML(`
+                    setHTML(modifyFrame, `
                      <div class="searchJumperModify-body">
-                         <a href="${configPage}" class="searchJumperModify-title" target="_blank">
+                         <a href="${homePage}" class="searchJumperModify-title" target="_blank">
                              <img onerror="this.style.display='none'" width="32px" height="32px" src="${logoBase64}" />${i18n("modifyWord")}
                          </a>
                          <div class="searchJumperModify-input-title">${i18n("wordContent")}</div>
@@ -4628,6 +5939,11 @@
                         }
                         if (modifyFrame.parentNode) {
                             modifyFrame.parentNode.removeChild(modifyFrame);
+                        }
+                    });
+                    modifyFrame.addEventListener("keydown", e => {
+                        if (e.keyCode == 13 && e.target && e.target.nodeName == 'INPUT') {
+                            modifyBtn.click();
                         }
                     });
                 }
@@ -4745,7 +6061,7 @@
                                 if (parent) {
                                     parent.dataset.content = word.showWords;
                                     parent.classList.add("searchJumper-hide");
-                                    parent.innerHTML = createHTML("");
+                                    setHTML(parent, "");
                                 }
                             }
                         }
@@ -4808,7 +6124,7 @@
                             mark.style.cssText = mark.dataset.css || "";
                             delete mark.dataset.css;
                         } else {
-                            let newNode = document.createTextNode(mark.innerText);
+                            let newNode = document.createTextNode(mark.firstChild.data);
                             mark.parentNode.replaceChild(newNode, mark);
                             newNode.parentNode.normalize();
                         }
@@ -4824,7 +6140,7 @@
             }
 
             emptyInPageWords() {
-                this.searchInPageLockWords.innerHTML = createHTML();
+                setHTML(this.searchInPageLockWords, "");
                 this.highlight("");
             }
 
@@ -4867,6 +6183,29 @@
                 this.setHighlightSpan(span, this.focusIndex, curList);
             }
 
+            getRect(ele) {
+                let eleBCR = ele.getBoundingClientRect();
+                let rect = {
+                    left: eleBCR.left,
+                    top: eleBCR.top,
+                    width: eleBCR.width,
+                    height: eleBCR.height
+                };
+
+                let currentWindow = ele.ownerDocument && ele.ownerDocument.defaultView;
+                let currentFrame = currentWindow && currentWindow.frameElement;
+
+                while (currentFrame) {
+                    const frameRect = currentFrame.getBoundingClientRect();
+                    rect.left += frameRect.left;
+                    rect.top += frameRect.top;
+
+                    currentWindow = currentWindow.parent;
+                    currentFrame = currentWindow.frameElement;
+                }
+                return rect;
+            }
+
             focusHighlight(ele) {
                 if (!ele) return;
                 if (this.focusMark) this.focusMark.removeAttribute('data-current');
@@ -4882,7 +6221,8 @@
                     this.addToShadow(this.hPosBar);
                 }
 
-                let rect = ele.getBoundingClientRect();
+                let rect = this.getRect(ele);
+
                 this.wPosBar.style.top = rect.top + document.documentElement.scrollTop + getBody(document).scrollTop + "px";
                 this.wPosBar.style.height = rect.height + "px";
 
@@ -4895,17 +6235,27 @@
                 setTimeout(async () => {
                     ele.scrollIntoView({behavior: "smooth", block: "center", inline: "nearest"});
                     ele.dataset.current = true;
-                    this.wPosBar.style.animationName = "fadeit";
-                    this.hPosBar.style.animationName = "fadeit";
-                    let fixTimes = 0;
+                    self.wPosBar.style.animationName = "fadeit";
+                    self.hPosBar.style.animationName = "fadeit";
+                    self.fixTimes = 0;
+                    let viewHeight = window.innerHeight || document.documentElement.clientHeight;
                     function fixPosBar() {
-                        if (self.focusMark != ele || ++fixTimes > 10) return;
-                        let rect = ele.getBoundingClientRect();
+                        if (self.focusMark != ele) return;
+                        let rect = self.getRect(ele);
                         self.wPosBar.style.top = rect.top + document.documentElement.scrollTop + getBody(document).scrollTop + "px";
                         self.hPosBar.style.left = rect.left + "px";
+                        if (self.fixTimes > 0 && rect.top > viewHeight / 3 && rect.top < viewHeight / 3 * 2) return;
+                        if (++self.fixTimes == 5) {
+                            ele.scrollIntoView({behavior: "smooth", block: "center", inline: "nearest"});
+                        } else if (self.fixTimes > 10) {
+                            ele.scrollIntoView({behavior: "smooth", block: "center", inline: "nearest"});
+                            self.wPosBar.style.animationName = "";
+                            self.hPosBar.style.animationName = "";
+                            return;
+                        }
                         setTimeout(() => {
                             fixPosBar();
-                        }, 150);
+                        }, 200);
                     }
                     fixPosBar();
                 }, 0);
@@ -4931,7 +6281,7 @@
                         if (!e.dataset.type) len++;
                     });
                 }
-                numEle.innerHTML = createHTML("[" + index + "/" + len + "]");
+                setHTML(numEle, "[" + index + "/" + len + "]");
             }
 
             getHighlightStyle(index, background, addCssText) {
@@ -5017,14 +6367,13 @@
                 return `${background}${addCssText}`;
             }
 
-            createNavMark(node, word, index, curList) {
+            createNavMark(node, word, index, curList, scrollHeight) {
                 let self = this;
                 let navMark = document.createElement("span");
-                let top = getElementTop(node);
+                let top = getElementTop(node, self.targetIframe);
                 navMark.title = word.title || word.showWords;
                 navMark.dataset.top = top;
                 navMark.dataset.content = word.showWords;
-                let scrollHeight = Math.max(document.documentElement.scrollHeight, getBody(document).scrollHeight);
                 navMark.style.top = top / scrollHeight * 100 + "%";
                 navMark.style.background = node.style.background || "yellow";
                 navMark.addEventListener("click", e => {
@@ -5041,38 +6390,38 @@
             }
 
             anylizeDomWithTextPos(dom, result) {
-                if (!result) result = {text: "", data:{}};
-                if (!dom || !dom.childNodes || !dom.childNodes.length) {
+                if (!result) result = {text: "", data:[]};
+                if (!dom || !dom.childNodes || !dom.childNodes.length || (dom.nodeType == 1 && !dom.offsetParent && !dom.offsetHeight && (!dom.firstElementChild || !dom.firstElementChild.offsetParent))) {
                     return result;
                 }
                 dom.childNodes.forEach(ele => {
-                    if ((ele.classList && ele.classList.contains("searchJumper")) || /^(img|svg|picture)$/i.test(ele.nodeName)) {
+                    if ((ele.classList && ele.classList.contains("searchJumper")) || /^(img|svg|picture|br|hr|textarea)$/i.test(ele.nodeName)) {
                         const start = result.text.length;
                         result.text += "\n";
-                        result.data[start] = {node: ele, text: "\n"};
-                    } else if (ele.offsetParent || ele.offsetHeight) {
-                        if (/^(li|p|a|td)$/i.test(ele.nodeName)) {
+                        result.data.push({index: start, node: ele, text: "\n"});
+                    } else if (ele.offsetParent || ele.offsetHeight || (ele.firstElementChild && ele.firstElementChild.offsetParent)) {
+                        if (/^(div|h\d|p|form|ul|li|ol|dl|address|menu|table|fieldset|td)$/i.test(ele.nodeName)) {
                             let start = result.text.length;
                             result.text += "\n";
-                            result.data[start] = {node: {}, text: "\n"};
+                            result.data.push({index: start, node: {}, text: "\n"});
                             result = this.anylizeDomWithTextPos(ele, result);
                             start = result.text.length;
                             result.text += "\n";
-                            result.data[start] = {node: {}, text: "\n"};
+                            result.data.push({index: start, node: {}, text: "\n"});
                         } else {
                             result = this.anylizeDomWithTextPos(ele, result);
                         }
                     } else if (ele.nodeType === 3) {
                         let textData;
                         if (ele.parentNode.nodeType == 1 && ele.parentNode.childNodes.length == 1) {
-                            textData = ele.parentNode.innerText;
+                            textData = ele.parentNode.innerText || ele.data;
                         } else {
                             textData = ele.data;
                         }
-                        if (!textData.trim()) return;
+                        if (!textData || !textData.trim()) return;
                         const start = result.text.length;
                         result.text += textData;
-                        result.data[result.text.length - 1] = {node: ele, text: textData};
+                        result.data.push({index: result.text.length - 1, node: ele, text: textData});
                     }
                 });
                 return result;
@@ -5131,7 +6480,16 @@
                     return false;
                 });
                 spannode.dataset.content = word.showWords;
+                let longPressTimer;
+                let setLongPressTimer = () => {
+                    clearTimeout(longPressTimer);
+                    longPressTimer = setTimeout(() => {
+                        let highlightUrl = location.href.replace(/#.*/, "") + "#sjhl=" + encodeURIComponent(word.oriWord) + "&i=" + (index + 1);
+                        _unsafeWindow.history.replaceState('', '', highlightUrl);
+                    }, 800);
+                };
                 spannode.addEventListener("mousedown", e => {
+                    setLongPressTimer();
                     if (!e.altKey) return;
                     let target;
                     let newIndex = index;
@@ -5153,6 +6511,9 @@
                     self.focusHighlight(target);
                     self.setHighlightSpan(self.getHighlightSpanByText(word.showWords), self.focusIndex, curList);
                     self.focusText = word.showWords;
+                });
+                spannode.addEventListener("mouseup", e => {
+                    clearTimeout(longPressTimer);
                 });
                 return spannode;
             }
@@ -5192,7 +6553,43 @@
                 this.addonsList.appendChild(con);
             }
 
-            findPosInStr(content, kw) {
+            findAccentedWord(text, searchWord, normalizeArray) {
+                const searchLength = searchWord.length;
+                let normalizedIndex = 0;
+                let startIndex = -1;
+
+                for (let i = 0; i < text.length; i++) {
+                    const normalized = normalizeArray[i];
+                    if (normalized === "") {
+                        continue;
+                    }
+                    if (normalized === searchWord[normalizedIndex]) {
+                        if (normalizedIndex === 0) startIndex = i;
+                        normalizedIndex++;
+                        if (normalizedIndex === searchLength) {
+                            return {
+                                pos: startIndex,
+                                len: i - startIndex + 1
+                            };
+                        }
+                    } else {
+                        normalizedIndex = 0;
+                        startIndex = -1;
+                        if (normalized === searchWord[0]) {
+                            startIndex = i;
+                            normalizedIndex = 1;
+                        }
+                    }
+                }
+
+                startIndex = text.indexOf(searchWord);
+                return {len: searchWord.length, pos: startIndex};
+            }
+
+            findPosInStr(content, kw, contentUp, wordUp, normalizeArray) {
+                if (!content) {
+                    return {len: 0, pos: -1};
+                }
                 let len = 0, pos = -1, hasAddon = false;
                 if (this.findInpageAddons.length) {
                     for (let i = 0; i < this.findInpageAddons.length; i++) {
@@ -5208,31 +6605,31 @@
                     }
                 }
                 if (pos == -1 && !hasAddon) {
-                    len = kw.length;
-                    pos = content.toUpperCase().indexOf(kw.toUpperCase());
+                    return this.findAccentedWord(contentUp, wordUp, normalizeArray);
                 }
                 return {len: len, pos: pos};
             }
 
-            highlight(words, ele, root) {
+            highlight(words, ele, root, iframe) {
                 if (!words && (!this.curHighlightWords || this.curHighlightWords.length === 0)) return;
                 if (!ele) {
                     this.highlight(words, getBody(document), root);
-                    [].forEach.call(document.getElementsByTagName("iframe"), iframe => {
-                        if (!iframe.offsetParent) return;
-                        if (iframe.offsetHeight < 100 || iframe.offsetWidth < 100) return;
-                        let iframeDoc;
-                        try {
-                            iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-                        } catch(e) {
-                            return;
-                        }
-                        if (iframeDoc && getBody(iframeDoc)) {
-                            this.highlight(words, getBody(iframeDoc), root);
-                        }
-                    });
                     return;
                 }
+                [].forEach.call(ele.getElementsByTagName("iframe"), iframe => {
+                    if (!iframe.offsetParent) return;
+                    if (iframe.offsetHeight < 100 || iframe.offsetWidth < 100) return;
+                    let iframeDoc;
+                    try {
+                        iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                    } catch(e) {
+                        return;
+                    }
+                    if (iframeDoc && getBody(iframeDoc)) {
+                        this.highlight(words, getBody(iframeDoc), root, iframe);
+                    }
+                });
+                this.targetIframe = iframe || false;
                 if (ele.id == "searchJumperModifyWord") return;
                 ele = ele || getBody(document);
                 let inWordMode = this.wordModeBtn.classList.contains("checked");
@@ -5241,10 +6638,11 @@
                 let self = this;
                 if (words === "") {
                     this.highlightSpans = {};
-                    Object.values(this.marks).forEach(markList => {
+                    Object.values(this.marks).forEach(async markList => {
                         if (!markList) return;
-                        markList.forEach(mark => {
-                            if (!mark.parentNode) return;
+                        let normalizeSet = new Set();
+                        for (let mark of markList) {
+                            if (!mark.parentNode) continue;
                             if (mark.dataset.block) {
                                 mark.parentNode && mark.parentNode.removeChild(mark);
                             } else if (!/^MARK$/i.test(mark.nodeName)) {
@@ -5252,18 +6650,28 @@
                                 mark.style.cssText = mark.dataset.css || "";
                                 delete mark.dataset.css;
                             } else {
-                                let newNode = document.createTextNode(mark.innerText);
+                                let newNode = document.createTextNode(mark.firstChild.data);
                                 mark.parentNode.replaceChild(newNode, mark);
-                                newNode.parentNode.normalize();
+                                const pa = newNode.parentNode;
+                                if (pa && pa.nodeName === 'SPAN' && pa.style.cssText === 'all: unset;') {
+                                    const papa = pa.parentNode;
+                                    if (papa) {
+                                        const newTextNodeCon = document.createDocumentFragment();
+                                        newTextNodeCon.append(...pa.childNodes);
+                                        papa.replaceChild(newTextNodeCon, pa);
+                                    }
+                                }
+                                normalizeSet.add(newNode.parentNode);
                             }
-                        });
+                        }
+                        normalizeSet.forEach(node => {node.normalize();});
                     });
                     [].forEach.call(ele.querySelectorAll(".searchJumper-hide"), hide => {
                         hide.classList.remove("searchJumper-hide");
                         hide.style.display = "";
                         hide.removeAttribute('data-content');
                     });
-                    this.navMarks.innerHTML = createHTML();
+                    setHTML(this.navMarks, "");
                     this.marks = {};
                     this.curHighlightWords = [];
                     return;
@@ -5281,7 +6689,10 @@
                 } else {
                     this.curHighlightWords = (this.curHighlightWords || []).concat(words);
                 }
-                this.fakeTextareas = {};
+                this.fakeTextareas = new Map();
+                let scrollHeight = Math.max(document.documentElement.scrollHeight, getBody(document).scrollHeight);
+                this.navMarks.style.display = "none";
+                let navMarkParams = [];
                 function searchWithinNode(node, word, start) {
                     let len, pos = -1, skip, spannode, middlebit, middleclone;
                     skip = 0;
@@ -5290,17 +6701,24 @@
                     if (start && (node.nodeType == 1 || node.nodeType == 11)) {
                         let domTextResult = self.anylizeDomWithTextPos(node);
                         let textRes = domTextResult.text;
+                        let textResUp = textRes.toUpperCase();
+
+                        let normalizeArray = [];
+                        for (let i = 0; i < textResUp.length; i++) {
+                            const normalized = textResUp[i].normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                            normalizeArray.push(normalized);
+                        }
+
+                        let wordUp = word.content.toUpperCase();
                         let dataRes = domTextResult.data;
                         let index = 0;
                         let nodeAndPos = [];
-                        //let validWord = (word.init || inWordMode) && /^[a-z]+$/i.test(word.content);
-                        function getNodePos(pos, len) {
-                            let keys = Object.keys(domTextResult.data);
+                        let validWord = (word.init || inWordMode) && /^[a-z]+$/i.test(word.content);
+                        function getNodePos(pos, len, matchedText) {
                             let findNodes = [], leftLen = len;
                             let pre = "", after = "", after2 = "";
-                            for (let i = 0; i < keys.length; i++) {
-                                let end = parseInt(keys[i]);
-                                let curnode = domTextResult.data[end];
+                            for (const curnode of dataRes) {
+                                const end = curnode.index;
                                 if (pos > end) continue;
                                 let curpos = pos - (end - curnode.text.length) - 1;
                                 let type = "full";
@@ -5315,8 +6733,9 @@
                                         type = "start";
                                     }
                                 }
+                                if (type === "full") matchedText = "";
 
-                                /*if (validWord) {
+                                if (validWord) {
                                     if (type == "full") {
                                         pre = curpos == 0 ? "\n" : curnode.text[curpos - 1];
                                         after = (curpos + leftLen) == curnode.text.length ? "\n" : curnode.text[curpos + leftLen];
@@ -5336,7 +6755,7 @@
                                             break;
                                         }
                                     }
-                                }*/
+                                }
 
                                 if (curpos < 0) curpos = 0;
                                 let curlen = Math.min(leftLen, curnode.text.length - curpos);
@@ -5352,8 +6771,8 @@
                                         break;
                                     }
                                 }
-                                if (!nodeInfo) nodeAndPos.push({node: curnode.node, text: curnode.text, match:[{pos: curpos, len: curlen, type: type}]});
-                                else nodeInfo.match.push({pos: curpos, len: curlen, type: type});
+                                if (!nodeInfo) nodeAndPos.push({node: curnode.node, text: curnode.text, match:[{pos: curpos, len: curlen, type: type, matched: matchedText}]});
+                                else nodeInfo.match.push({pos: curpos, len: curlen, type: type, matched: matchedText});
                                 if (leftLen <= 0) break;
                             }
                         }
@@ -5367,15 +6786,18 @@
                                     pos = wordMatch.index;
                                 }
                             } else {
-                                let result = self.findPosInStr(textRes, word.content);
+                                let result = self.findPosInStr(textRes, word.content, textResUp, wordUp, normalizeArray);
                                 len = result.len;
                                 pos = result.pos;
                             }
                             if (pos > -1) {
+                                let matchedText = textRes.slice(pos, pos + len);
                                 textRes = textRes.slice(pos + len);
+                                textResUp = textResUp.slice(pos + len);
+                                normalizeArray = normalizeArray.slice(pos + len);
                                 pos += index;
                                 index = pos + len;
-                                getNodePos(pos, len);
+                                getNodePos(pos, len, matchedText);
                                 getIndex();
                             }
                         }
@@ -5389,7 +6811,7 @@
                                         parent = parent.parentElement;
                                     }
                                     if (parent && parent.classList && !parent.classList.contains("searchJumper-hide")) {
-                                        parent.innerHTML = createHTML("");
+                                        setHTML(parent, "");
                                         parent.dataset.content = word.showWords;
                                         parent.classList.add("searchJumper-hide");
                                     }
@@ -5397,7 +6819,7 @@
                                     let curList = self.marks[word.showWords];
                                     let index = curList.length;
                                     let spannode;
-                                    let newTextNodeCon;
+                                    /*let newTextNodeCon;
                                     let parentDisplay = "";
                                     if (data.node.parentNode.nodeType == 1) {
                                         let parentStyle = getComputedStyle(data.node.parentNode);
@@ -5408,17 +6830,20 @@
                                         newTextNodeCon.style.all = "unset";
                                     } else {
                                         newTextNodeCon = document.createDocumentFragment();
-                                    }
+                                    }*/
+                                    const newTextNodeCon = document.createElement("span");
+                                    newTextNodeCon.style.all = "unset";
                                     let newTextNode = document.createTextNode(data.text);
                                     newTextNodeCon.appendChild(newTextNode);
                                     let matches = data.match.reverse();
-                                    let spannodes = [];
+                                    let spannodes = [], j = matches.length - 1;
                                     matches.forEach(d => {
-                                        spannode = self.createHighlightMark(word, index, curList);
+                                        spannode = self.createHighlightMark(word, index + j, curList);
                                         switch (d.type) {
                                             case "start":
                                                 spannode.style.borderTopRightRadius = 0;
                                                 spannode.style.borderBottomRightRadius = 0;
+                                                j--;
                                                 break;
                                             case "middle":
                                                 spannode.style.borderRadius = 0;
@@ -5428,6 +6853,7 @@
                                                 spannode.style.borderBottomLeftRadius = 0;
                                                 break;
                                             default:
+                                                j--;
                                                 break;
                                         }
                                         middlebit = newTextNode.splitText(d.pos);
@@ -5439,14 +6865,17 @@
                                         if (d.type != "full" && d.type != "start") {
                                             spannode.dataset.type = d.type;
                                         }
+                                        if (d.matched) {
+                                            spannode.dataset.matched = d.matched;
+                                        }
                                         newTextNodeCon.replaceChild(spannode, middlebit);
                                         spannodes.unshift(spannode);
                                     });
                                     data.node.parentNode.replaceChild(newTextNodeCon, data.node);
+                                    self.marks[word.showWords].push(...spannodes);
                                     spannodes.forEach(n => {
-                                        self.marks[word.showWords].push(n);
                                         if (!n.dataset.type) {
-                                            self.createNavMark(n, word, index, curList);
+                                            navMarkParams.push([n, word, index, curList, scrollHeight]);
                                         }
                                     });
                                 }
@@ -5466,7 +6895,7 @@
                                         parent = parent.parentElement;
                                     }
                                     if (parent) {
-                                        parent.innerHTML = createHTML("");
+                                        setHTML(parent, "");
                                         parent.dataset.content = word.showWords;
                                         parent.classList.add("searchJumper-hide");
                                         return 0;
@@ -5509,7 +6938,7 @@
                                     });
                                     self.marks[word.showWords].push(node);
 
-                                    self.createNavMark(node, word, index, curList);
+                                    navMarkParams.push([node, word, index, curList, scrollHeight]);
                                 }
                             }
                         }
@@ -5522,13 +6951,20 @@
                             checkChildren = false;
                             let wordMatch = false;
                             let lastIndex = 0;
-                            let fakeTextarea = self.fakeTextareas[node];
+                            let fakeTextarea = self.fakeTextareas.get(node);
                             if (insert && fakeTextarea) return 0;
                             let nodeStyle = getComputedStyle(node);
-                            let textareaLoc = node.getBoundingClientRect();
-                            let textareaParentLoc = (node.offsetParent || getBody(document)).getBoundingClientRect();
-                            let baseLeft = textareaLoc.left - textareaParentLoc.left;
-                            let baseTop = textareaLoc.top - textareaParentLoc.top;
+                            let baseLeft = node.offsetLeft;//textareaLoc.left - textareaParentLoc.left;
+                            let baseTop = node.offsetTop//textareaLoc.top - textareaParentLoc.top;
+                            let blockValueUp = blockValue.toUpperCase();
+
+                            let normalizeArray = [];
+                            for (let i = 0; i < blockValueUp.length; i++) {
+                                const normalized = blockValueUp[i].normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                                normalizeArray.push(normalized);
+                            }
+
+                            let wordUp = word.content.toUpperCase();
                             while (true) {
                                 if (word.isRe) {
                                     wordMatch = blockValue.match(new RegExp(word.content, word.reCase));
@@ -5537,7 +6973,7 @@
                                         wordMatch = wordMatch[0];
                                     }
                                 } else {
-                                    let result = self.findPosInStr(blockValue, word.content);
+                                    let result = self.findPosInStr(blockValue, word.content, blockValueUp, wordUp, normalizeArray);
                                     len = result.len;
                                     pos = result.pos;
                                     if ((word.init || inWordMode) && pos >= 0 && /^[a-z]+$/i.test(word.content)) {
@@ -5554,6 +6990,8 @@
                                     findTextInBlock(wordMatch, lastIndex + pos);
                                     lastIndex += (pos + wordMatch.length);
                                     blockValue = blockValue.slice(pos + wordMatch.length);
+                                    blockValueUp = blockValueUp.slice(pos + wordMatch.length);
+                                    normalizeArray = normalizeArray.slice(pos + wordMatch.length);
                                 } else break;
                             }
                             function findTextInBlock(curWord, pos) {
@@ -5590,16 +7028,15 @@
                                             fakeTextarea.style.lineHeight = fakeTextarea.style.height;
                                             if (fakeTextarea.style.boxSizing == "border-box") fakeTextarea.style.paddingTop = 0;
                                         }
-                                        self.fakeTextareas[node] = fakeTextarea;
+                                        self.fakeTextareas.set(node, fakeTextarea);
                                     }
+
                                     document.body.appendChild(fakeTextarea);
                                     let range = document.createRange();
-                                    range.setStart(fakeTextarea.firstChild, pos);
-                                    range.setEnd(fakeTextarea.firstChild, pos + 1);
+                                    range.setStart(fakeTextarea.firstChild, Math.min(fakeTextarea.firstChild.length, pos));
+                                    range.setEnd(fakeTextarea.firstChild, Math.min(fakeTextarea.firstChild.length, pos + 1));
                                     let rect = range.getBoundingClientRect();
                                     document.body.removeChild(fakeTextarea);
-
-
 
                                     if (typeof word.hideParent !== 'undefined') {
                                         let parentDepth = word.hideParent;
@@ -5608,7 +7045,7 @@
                                             parent = parent.parentElement;
                                         }
                                         if (parent) {
-                                            parent.innerHTML = createHTML("");
+                                            setHTML(parent, "");
                                             parent.dataset.content = word.showWords;
                                             parent.classList.add("searchJumper-hide");
                                             return 0;
@@ -5624,19 +7061,20 @@
                                         spannode.style.cssText = word.style;
                                         spannode.dataset.content = word.showWords;
                                         spannode.innerText = curWord;
-                                        node.parentNode.appendChild(spannode);
+                                        spannode.style.padding = "0";
+                                        spannode.style.position = "absolute";
                                         spannode.style.fontSize = fakeTextarea.style.fontSize;
                                         spannode.style.fontFamily = fakeTextarea.style.fontFamily;
                                         spannode.style.lineHeight = "1";
-                                        spannode.style.padding = "0";
-                                        spannode.style.position = "absolute";
                                         spannode.style.pointerEvents = "none";
+                                        node.parentNode.appendChild(spannode);
                                         let _baseLeft = rect.left + baseLeft;
                                         let _baseTop = rect.top + baseTop;
                                         spannode.style.left = _baseLeft + "px";
                                         spannode.style.top = _baseTop + "px";
                                         self.marks[word.showWords].push(spannode);
-                                        self.createNavMark(spannode, word, index, curList);
+
+                                        navMarkParams.push([spannode, word, index, curList, scrollHeight]);
                                         if (node.nodeName && node.nodeName.toLowerCase && node.nodeName.toLowerCase() == "textarea") {
                                             let nodeScrollHandler = e => {
                                                 if (!spannode.parentNode) {
@@ -5703,7 +7141,13 @@
                         })
                     } else searchWithinNode(ele, w, true);
                 });
+                navMarkParams.forEach(param => {
+                    self.createNavMark(...param);
+                });
+                this.navMarks.style.display = "";
                 setTimeout(() => {
+                    self.navMarks.style.display = "none";
+                    navMarkParams = [];
                     searchingPre = true;
                     words.forEach(w => {
                         if (!self.marks[w.showWords]) {
@@ -5713,6 +7157,10 @@
                             searchWithinNode(e, w, true);
                         });
                     });
+                    navMarkParams.forEach(param => {
+                        self.createNavMark(...param);
+                    });
+                    self.navMarks.style.display = "";
                 }, 1000);
                 if (this.navMarks.innerHTML != "") {
                     this.searchJumperNavBar.classList.add("sjNavShow");
@@ -5727,12 +7175,13 @@
             refreshPageWords(newWords) {
                 this.lockWords = "";
                 this.searchJumperInPageInput.value = "";
-                this.searchInPageLockWords.innerHTML = createHTML();
+                setHTML(this.searchInPageLockWords, "");
                 this.searchJumperInPageInput.style.paddingLeft = "";
                 this.submitInPageWords();
-                if (newWords || globalInPageWords) {
-                    this.searchJumperInPageInput.value = newWords || globalInPageWords;
-                    this.submitInPageWords();
+                let words = newWords || globalInPageWords;
+                if (words) {
+                    this.searchJumperInPageInput.value = words;
+                    this.submitInPageWords(words == this.lastSearchEngineWords);
                     this.appendBar();
                 }
             }
@@ -5812,26 +7261,29 @@
                 document.removeEventListener("mousedown", self.showAllMouseHandler);
                 document.removeEventListener("keydown", self.showAllKeydownHandler);
                 this.con.classList.remove("search-jumper-showall");
-                document.documentElement.style.overflow = this.preOverflow;
+                document.documentElement.style.scrollbarWidth = this.preScrollbarWidth;
                 this.searchJumperInputKeyWords.value = "";
-                this.historylist.innerHTML = createHTML();
+                setHTML(this.historylist, "");
                 /*this.historySiteBtns.slice(0, 10).forEach(btn => {
                     this.siteBtnReturnHome(btn);
                 });*/
                 this.touched = false;
                 this.initPos();
+                if (this.funcKeyCall) {
+                    this.setFuncKeyCall(false);
+                }
                 if (!searchData.prefConfig.disableAutoOpen && !searchData.prefConfig.disableTypeOpen) {
                     let firstType = this.bar.querySelector('.search-jumper-type:nth-child(1)>span');
                     if (firstType && !firstType.classList.contains("search-jumper-open")) {
-                        if (firstType.onmousedown) {
-                            firstType.onmousedown();
+                        if (firstType.onmouseup) {
+                            firstType.onmouseup();
                         } else {
-                            let mouseEvent = new PointerEvent("mousedown");
+                            let mouseEvent = new PointerEvent("mouseup");
                             firstType.dispatchEvent(mouseEvent);
                         }
                     }
                 }
-                this.bar.style.display = ''
+                this.bar.style.display = '';
             }
 
             toggleShowAll() {
@@ -5849,33 +7301,28 @@
                 this.con.style.display = "";
                 this.clearInputHide();
                 this.alllist.appendChild(this.filterSites);
-                this.filterGlob.innerHTML = createHTML();
+                setHTML(this.filterGlob, "");
                 let self = this;
+                let kw = this.tileInput.value;
                 this.setFuncKeyCall(false);
                 this.hideSearchInput();
                 this.con.classList.add("search-jumper-showall");
-                this.preOverflow = document.documentElement.style.overflow || "";
-                document.documentElement.style.overflow = "hidden";
+                this.con.querySelector('.search-jumper-showallBg').style.backdropFilter = isAllPage ? 'none' : 'blur(8px)';
+                this.preScrollbarWidth = document.documentElement.style.scrollbarWidth || "";
+                document.documentElement.style.scrollbarWidth = "none";
                 clearInterval(this.showAllTimeTimer);
                 const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-                if (window.innerWidth < 1000) {
-                    self.timeInAll.style.fontSize = "15px";
-                    self.dayInAll.style.fontSize = "15px";
-                } else {
-                    self.timeInAll.style.fontSize = "";
-                    self.dayInAll.style.fontSize = "";
-                }
                 let now = new Date();
                 let year = now.getFullYear(), month = now.getMonth(), date = now.getDate();
-                let dayLabelStr = i18n(days[now.getDay()]) + "<br/>" + year + '-' + (++month < 10 ? '0' + month : month) + '-' + (date < 10 ? '0' + date : date);
-                if (lang.indexOf("zh-") == 0) {
+                let dayLabelStr = year + '-' + (++month < 10 ? '0' + month : month) + '-' + (date < 10 ? '0' + date : date) + ' · ' + i18n(days[now.getDay()]);
+                if (lang.indexOf("zh") == 0 || lang.indexOf("ja") == 0) {
                     let lunar = sloarToLunar(year, month, date);
                     if (lunar) {
                         let lunarStr = `${lunar.lunarYear}年${lunar.lunarMonth}月${lunar.lunarDay}`;
-                        dayLabelStr = dayLabelStr + "<br/>" + lunarStr;
+                        dayLabelStr = dayLabelStr + '<small>' + lunarStr + '</small>';
                     }
                 }
-                self.dayInAll.innerHTML = createHTML(dayLabelStr);
+                setHTML(self.dayInAll, dayLabelStr);
                 let setTimeLabel = () => {
                     let now = new Date();
                     let hour = now.getHours(), minute = now.getMinutes(), seconds = now.getSeconds();
@@ -5888,15 +7335,18 @@
                         let sitelist = type.querySelector('.sitelist');
                         if (sitelist) {
                             self.sitelistBox.appendChild(sitelist);
-                            self.initList(sitelist);
                         }
                     }
+                });
+                [].forEach.call(self.sitelistBox.querySelectorAll('.sitelist'), sitelist => {
+                    sitelist.style.opacity = "";
+                    sitelist.style.height = "";
+                    self.initList(sitelist);
                 });
                 this.historySiteBtns.slice(0, 20).forEach(btn => {
                     let siteImg = btn.querySelector('img');
                     if (siteImg && siteImg.dataset.src) {
-                        siteImg.src = siteImg.dataset.src;
-                        delete siteImg.dataset.src;
+                        loadIcon(siteImg);
                     }
                     self.historylist.appendChild(btn);
                 });
@@ -5906,12 +7356,12 @@
                      (targetElement.parentNode && targetElement.parentNode.nodeName.toUpperCase() == 'A'))) {
                     targetKw = targetElement.textContent.trim();
                 }
-                let kw = getKeywords() || targetKw || cacheKeywords;
+                kw = kw || getKeywords() || targetKw || cacheKeywords;
                 this.searchJumperInputKeyWords.value = kw;
                 setTimeout(() => {
                     if (!self.showAllMouseHandler) {
                         self.showAllMouseHandler = e => {
-                            if (e.isTrusted == false || e.target.className === 'sitelistBox' || e.target.className === 'search-jumper-showallBg') {
+                            if (e.isTrusted == false || e.target.className === 'sitelistBox' || e.target.className === 'search-jumper-showallBg' || e.target.id === 'search-jumper-alllist') {
                                 self.closeShowAll();
                             }
                         };
@@ -5925,8 +7375,13 @@
                             }
                         };
                     }
-                    document.addEventListener("keydown", self.showAllKeydownHandler);
-                    if (this.searchJumperInputKeyWords.value) {
+                    document.addEventListener("keydown", self.showAllKeydownHandler, true);
+                    if (cacheFilter) {
+                        this.searchInput.value = cacheFilter;
+                        this.searchInput.dispatchEvent(new Event("input"));
+                        this.searchInput.focus();
+                        this.searchInput.select();
+                    } else if (this.searchJumperInputKeyWords.value) {
                         this.searchJumperInputKeyWords.focus();
                         this.searchJumperInputKeyWords.select();
                     }
@@ -5988,32 +7443,29 @@
                     if (searchData.prefConfig.defaultPicker) {
                         this.togglePicker();
                     }
-                    if (!this.searchJumperInputKeyWords.value && currentSite) {
-                        this.searchJumperInputKeyWords.value = getKeywords() || cacheKeywords;
-                        this.searchJumperInputKeyWords.focus();
-                        this.searchJumperInputKeyWords.select();
-                    } else {
-                        this.searchInput.focus();
+                    if (!this.searchJumperInputKeyWords.value) {
+                        this.searchJumperInputKeyWords.value = getKeywords();
                     }
                     let firstType = this.bar.querySelector('.search-jumper-needInPage:not(.notmatch)>span');
                     if (firstType && !firstType.parentNode.classList.contains('search-jumper-open')) {
-                        if (firstType.onmousedown) {
-                            firstType.onmousedown();
+                        if (firstType.onmouseup) {
+                            firstType.onmouseup();
                         } else {
-                            let mouseEvent = new PointerEvent("mousedown");
+                            let mouseEvent = new PointerEvent("mouseup");
                             firstType.dispatchEvent(mouseEvent);
                         }
                     }
                     if (cacheFilter) {
                         this.searchInput.value = cacheFilter;
                         this.searchInput.dispatchEvent(new Event("input"));
-                        this.searchJumperInputKeyWords.focus();
                     }
+                    this.searchJumperInputKeyWords.focus();
+                    this.searchJumperInputKeyWords.select();
                 } else if (this.searchInPageTab.checked) {
                     this.con.classList.add("in-find");
                     this.searchJumperInPageInput.focus();
                     setTimeout(() => {
-                        if (selStr) {
+                        if (selStr && this.lockWords.indexOf(selStr) == -1) {
                             this.searchJumperInPageInput.value = "";
                             if (!this.navMarks.innerHTML) {
                                 this.submitIgnoreSpace(selStr);
@@ -6064,18 +7516,13 @@
                 picker.close();
                 document.removeEventListener("mouseup", this.checkSelHandler);
                 this.setFuncKeyCall(false);
-                let openType = this.bar.querySelector('.search-jumper-type.search-jumper-open>span');
-                if (openType) {
-                    if (openType.onmousedown) {
-                        openType.onmousedown();
-                    } else {
-                        let mouseEvent = new PointerEvent("mousedown");
-                        openType.dispatchEvent(mouseEvent);
-                    }
-                }
+                this.closeOpenType();
             }
 
             removeBar() {
+                if (this.shadowContainer && this.shadowContainer.parentNode) {
+                    this.shadowContainer.parentNode.removeChild(this.shadowContainer);
+                }
                 if (this.con.parentNode) {
                     this.con.parentNode.removeChild(this.con);
                 }
@@ -6084,15 +7531,13 @@
             async testCSP() {
                 let self = this;
                 let cspHandler = e => {
+                    if (!e.violatedDirective || e.violatedDirective.indexOf("style-src") == -1) return;
                     disabled = true;
-                    self.shadowContainer.parentNode.removeChild(self.shadowContainer);
-                    self.shadowContainer = document.createElement("div");
-                    self.shadowContainer.setAttribute('contenteditable', 'false');
                 };
                 window.addEventListener('securitypolicyviolation', cspHandler);
                 let testStyleEle = _GM_addStyle(`html {color: #000;}`);
                 this.addToShadow(testStyleEle);
-                await sleep(1);
+                await sleep(0);
                 window.removeEventListener('securitypolicyviolation', cspHandler);
                 testStyleEle.parentNode && testStyleEle.parentNode.removeChild(testStyleEle);
             }
@@ -6116,14 +7561,31 @@
                     if (this.shadowRoot) {
                         shadow = this.shadowRoot;
                     } else {
-                        this.shadowContainer.setAttribute('contenteditable', 'true');
+                        //this.shadowContainer.setAttribute('contenteditable', 'true');
+                        this.shadowContainer.className = "search-jumper-shadow";
+                        let style = _GM_addStyle(`
+                         .search-jumper-shadow {
+                          display: block !important;
+                          width: 0px !important;
+                          height: 0px !important;
+                          margin: 0px !important;
+                          padding: 0px !important;
+                          border-width: initial !important;
+                          border-style: none !important;
+                          border-color: initial !important;
+                          border-image: initial !important;
+                          outline: none !important;
+                          position: unset !important;
+                         }
+                        `);
+                        this.shadowContainer.appendChild(style);
                         let shadowRoot = this.shadowContainer.attachShadow({ mode: "closed" });
                         shadow = document.createElement("div");
                         shadow.id = "search-jumper-root";
                         shadow.style.display = "none";
                         shadow.setAttribute('contenteditable', 'false');
                         let hideShadowStyle = document.createElement("style");
-                        hideShadowStyle.innerHTML = createHTML("#search-jumper-root{display: block!important;}");
+                        setHTML(hideShadowStyle, "#search-jumper-root{display: block!important;}");
                         shadow.appendChild(hideShadowStyle);
                         shadowRoot.appendChild(shadow);
                         this.shadowRoot = shadow;
@@ -6143,31 +7605,51 @@
                     if (!disabled) this.addToShadow(mainStyleEle);
                 }
                 if (this.addToShadow(this.con)) {
-                    setTimeout(() => {
-                        if (!isAllPage && this.con.parentNode) {
-                            if (getComputedStyle(this.con).zIndex != "2147483647") {
-                                this.removeBar();
-                                if (disabled) {
-                                    debug(i18n("cspDisabled"));
+                    let self = this;
+                    let checkZIndex = () => {
+                        setTimeout(() => {
+                            if (self.shadowContainer && !self.shadowContainer.parentNode) {
+                                if (shareEngines) {
+                                    document.body.appendChild(self.shadowContainer);
                                 } else {
-                                    disabled = true;
-                                    mainStyleEle = _GM_addStyle(cssText);
-                                    this.shadowContainer.parentNode.removeChild(this.shadowContainer);
-                                    this.shadowContainer = document.createElement("div");
-                                    this.shadowContainer.setAttribute('contenteditable', 'false');
-                                    document.documentElement.appendChild(this.shadowContainer);
-                                    this.appendBar();
+                                    document.documentElement.appendChild(self.shadowContainer);
+                                }
+                                checkZIndex();
+                                return;
+                            }
+                            if (!isAllPage && self.con.parentNode) {
+                                if (getComputedStyle(self.con).zIndex != "2147483646") {
+                                    this.removeBar();
+                                    if (disabled) {
+                                        debug(i18n("cspDisabled"));
+                                    } else {
+                                        disabled = true;
+                                        mainStyleEle = _GM_addStyle(cssText);
+                                        self.shadowContainer.parentNode.removeChild(self.shadowContainer);
+                                        self.shadowContainer = document.createElement("div");
+                                        self.shadowContainer.setAttribute('contenteditable', 'false');
+                                        document.documentElement.appendChild(self.shadowContainer);
+                                        self.appendBar();
+                                    }
                                 }
                             }
-                        }
-                    }, 1);
+                        }, 100);
+                    };
+                    checkZIndex();
                 }
             }
 
             async searchBySiteName(siteName, e, selfTab) {
                 if (!e) e = {};
+                if (e && e.type === 'drop') {
+                    this.closeShowAll();
+                }
                 for (let [siteBtn, siteData] of this.allSiteBtns) {
                     if (siteBtn.dataset.name == siteName) {
+                        if (siteBtn.dataset.showTips) {
+                            siteBtn.dispatchEvent(new CustomEvent('showTips'));
+                            return;
+                        }
                         await this.siteSetUrl(siteBtn, {button: e.button, altKey: e.altKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, metaKey: e.metaKey});
                         let isPage = /^(https?|ftp):/.test(siteBtn.href);
                         if (isPage) {
@@ -6183,7 +7665,7 @@
                 for (let i = searchTypes.length - 1; i >= 0; i--) {
                     let typeEle = searchTypes[i];
                     if (typeEle.dataset.type == siteName) {
-                        typeEle.firstChild.onmousedown({button: 2});
+                        typeEle.firstChild.onmouseup && typeEle.firstChild.onmouseup({button: 2});
                         return;
                     }
                 }
@@ -6193,7 +7675,7 @@
                 for (let i = searchTypes.length - 1; i >= 0; i--) {
                     let typeEle = searchTypes[i];
                     if (typeEle.dataset.type == siteName) {
-                        typeEle.firstChild.onmousedown({button: 2});
+                        typeEle.firstChild.onmouseup && typeEle.firstChild.onmouseup({button: 2});
                         return;
                     }
                 }
@@ -6233,14 +7715,14 @@
                 if (!firstType) firstType = this.bar.querySelector('.search-jumper-targetAll:not(.notmatch)') || this.bar.querySelector('.search-jumper-type');
                 if (firstType) {
                     this.setFuncKeyCall(false);
-                    let mouseEvent = new PointerEvent("mousedown");
+                    let mouseEvent = new PointerEvent("mouseup");
                     if (firstType.classList.contains('search-jumper-open')) {
-                        if (firstType.children[0].onmousedown) firstType.children[0].onmousedown();
+                        if (firstType.children[0].onmouseup) firstType.children[0].onmouseup();
                         else {
                             firstType.children[0].dispatchEvent(mouseEvent);
                         }
                     }
-                    if (firstType.children[0].onmousedown) firstType.children[0].onmousedown();
+                    if (firstType.children[0].onmouseup) firstType.children[0].onmouseup();
                     else {
                         firstType.children[0].dispatchEvent(mouseEvent);
                     }
@@ -6291,6 +7773,7 @@
                 this.allSiteBtns = [];
                 this.allListBtns = [];
                 this.allLists = [];
+                this.dockerScaleBtns = [];
                 this.bar.style.visibility = "hidden";
                 let sitesNum = 0;
                 let bookmarkTypes = [];
@@ -6320,7 +7803,7 @@
                     if (this.searchJumperInPageInput.value) words += this.splitSep + this.searchJumperInPageInput.value;
                     this.lockWords = "";
                     this.searchJumperInPageInput.value = words;
-                    this.searchInPageLockWords.innerHTML = createHTML();
+                    setHTML(this.searchInPageLockWords, "");
                     this.searchJumperInPageInput.style.paddingLeft = "";
                 };
                 document.addEventListener("keydown", e => {
@@ -6334,9 +7817,9 @@
                             this.highlight("");
                             this.searchJumperInPageInput.value = this.lockWords;
                             this.lockWords = "";
-                            this.searchInPageLockWords.innerHTML = createHTML();
+                            setHTML(this.searchInPageLockWords, "");
                             this.setNav(false, true);
-                        } else {
+                        } else if (this.funcKeyCall) {
                             this.removeBar();
                         }
                     }
@@ -6434,7 +7917,7 @@
                     this.recoverBtn.addEventListener("click", e => {
                         this.lockWords = "";
                         this.searchJumperInPageInput.value = globalInPageWords;
-                        this.searchInPageLockWords.innerHTML = createHTML();
+                        setHTML(this.searchInPageLockWords, "");
                         this.highlight("");
                         this.submitInPageWords();
                         this.searchJumperInPageInput.focus();
@@ -6470,7 +7953,7 @@
                     if (shareEngines) return;
                     dataChanged(() => {
                         let inPageRule = searchData.prefConfig.inPageRule || {};
-                        inPageRule[this.inPageRuleKey || location.href.replace(/([&\?]_i=|#).*/, "")] = this.lockWords;
+                        inPageRule[this.inPageRuleKey || href.replace(/([&\?]_i=|#).*/, "")] = this.lockWords;
                         searchData.prefConfig.inPageRule = inPageRule;
                         searchData.lastModified = new Date().getTime();
                         lastModified = searchData.lastModified;
@@ -6481,7 +7964,7 @@
                 this.emptyBtn.addEventListener("click", e => {
                     this.lockWords = "";
                     this.searchJumperInPageInput.value = "";
-                    this.searchInPageLockWords.innerHTML = createHTML();
+                    setHTML(this.searchInPageLockWords, "");
                     this.searchJumperInPageInput.style.paddingLeft = "";
                     this.submitInPageWords();
                     this.searchJumperInPageInput.focus();
@@ -6499,7 +7982,7 @@
                     if (this.lockWords) {
                         this.searchJumperInPageInput.value = this.lockWords || "";
                         this.lockWords = "";
-                        this.searchInPageLockWords.innerHTML = createHTML();
+                        setHTML(this.searchInPageLockWords, "");
                         this.searchJumperInPageInput.style.paddingLeft = "";
                         this.highlight("");
                         this.searchJumperInPageInput.focus();
@@ -6525,9 +8008,13 @@
                         if (this.searchJumperInPageInput.value) words += this.splitSep + this.searchJumperInPageInput.value;
                         this.lockWords = "";
                         this.searchJumperInPageInput.value = words;
-                        this.searchInPageLockWords.innerHTML = createHTML();
+                        setHTML(this.searchInPageLockWords, "");
                         this.searchJumperInPageInput.style.paddingLeft = "";
                     }
+                });
+                this.maxNavBtn.addEventListener("click", e => {
+                    self.showInPage();
+                    self.showInPageSearch();
                 });
                 this.navMarks.addEventListener("click", e => {
                     let topPercent = e.offsetY / this.navMarks.clientHeight * 100;
@@ -6558,13 +8045,24 @@
                         mark.click();
                     }
                 });
+                this.bar.addEventListener("mousedown", e => {
+                    e && e.stopPropagation && e.stopPropagation();
+                    e && e.preventDefault && e.preventDefault();
+                });
+
+                this.con.addEventListener('dblclick', e=>{
+                    e.stopPropagation();
+                    e.preventDefault();
+                });
                 //Search in page
 
                 let expandTypeHandler = e => {
+                    e.stopPropagation();
                     e.preventDefault();
                     let typeEle = self.searchJumperExpand.parentNode;
                     if (!typeEle || !typeEle.classList.contains('not-expand')) return;
                     typeEle.classList.remove('not-expand');
+                    typeEle.classList.remove('search-jumper-move');
                     let leftRight = self.con.classList.contains("search-jumper-left") ||
                         self.con.classList.contains("search-jumper-right");
                     typeEle.removeChild(self.searchJumperExpand);
@@ -6578,17 +8076,26 @@
                     }
                     setTimeout(() => {
                         self.checkScroll();
+                        typeEle.classList.add('search-jumper-move');
                     }, 251);
                 }, showTimer;
-                this.searchJumperExpand.addEventListener("click", expandTypeHandler);
-                this.searchJumperExpand.addEventListener("contextmenu", expandTypeHandler);
-                if (searchData.prefConfig.overOpen) {
-                    this.searchJumperExpand.addEventListener('mouseenter', e => {
+                this.searchJumperExpand.addEventListener("click", expandTypeHandler, true);
+                this.searchJumperExpand.addEventListener("contextmenu", expandTypeHandler, true);
+                this.searchJumperExpand.addEventListener('mouseenter', e => {
+                    if (searchData.prefConfig.overOpen) {
                         clearTimeout(showTimer);
                         showTimer = setTimeout(() => {
                             expandTypeHandler(e);
                         }, 500);
-                    }, false);
+                    }
+                    let sitelistEvent = new CustomEvent("sitelist", {
+                        detail: {
+                            bind: e.currentTarget,
+                        }
+                    });
+                    e.currentTarget.parentNode.dispatchEvent(sitelistEvent);
+                }, false);
+                if (searchData.prefConfig.overOpen) {
                     this.searchJumperExpand.addEventListener('mouseleave', e => {
                         clearTimeout(showTimer);
                     }, false);
@@ -6632,30 +8139,10 @@
                 this.searchInPageRule();
                 if (currentSite && wordParamReg.test(currentSite.url)) {
                     this.inSearchEngine();
-                } else if (searchData.prefConfig.alwaysShow && !inIframe) {
+                } else if (searchData.prefConfig.alwaysShow && !inIframe && !isInConfigPage) {
                     this.bar.style.display = "";
                     this.initPos();
                     this.appendBar();
-                }
-                if (this.fontPool.length > 0 || isInConfigPage) {
-                    let linkEle = document.createElement("link");
-                    linkEle.rel="stylesheet";
-                    linkEle.href = searchData.prefConfig.fontAwesomeCss || "https://lib.baomitu.com/font-awesome/6.1.2/css/all.css";
-                    document.documentElement.insertBefore(linkEle, document.documentElement.children[0]);
-                    this.addToShadow(linkEle.cloneNode());
-                    waitForFontAwesome(() => {
-                        let hasFont = false;
-                        this.fontPool.forEach(font => {
-                            font.innerText = '';
-                            font.style.fontSize = '';
-                            font.style.color = '';
-                            hasFont = true;
-                            cacheFontPool.unshift(font);
-                        });
-                        if (hasFont && isInConfigPage) {
-                            setTimeout(() => {cacheFontManager()}, 5000);
-                        }
-                    });
                 }
 
                 if (lastSign) {
@@ -6665,9 +8152,9 @@
                 lastSign = false;
 
                 if (inPagePostParams) {
-                    this.submitAction(inPagePostParams);
+                    this.submitAction(inPagePostParams).catch(error => window.alert(error.message));
                     setTimeout(() => {
-                        storage.setListItem("inPagePostParams", location.hostname, "");
+                        storage.setListItem("inPagePostParams", location.hostname, "").catch(error => console.warn('SearchJumper page actions:', error));
                     }, 10000);
                 }
                 let searchWithCurrentFilter = e => {
@@ -6685,12 +8172,31 @@
                     }
                 };
                 let inputTimer;
+                let isComposing = false;
                 this.inInput = false;
+                let saveCacheFilter = () => {
+                    if (cacheFilter !== self.searchInput.value) {
+                        cacheFilter = self.searchInput.value;
+                        storage.setItem("cacheFilter", cacheFilter);
+                    }
+                };
                 this.searchInput.addEventListener("input", e => {
                     clearTimeout(inputTimer);
                     inputTimer = setTimeout(() => {
-                        self.searchSiteBtns(self.searchInput.value)
+                        if (!isComposing) self.searchSiteBtns(self.searchInput.value)
                     }, 500);
+                });
+                this.searchInput.addEventListener('compositionstart', function() {
+                    isComposing = true;
+                });
+                this.searchInput.addEventListener('compositionend', function() {
+                    isComposing = false;
+                });
+                this.searchInput.addEventListener("click", e => {
+                    self.searchInput.select();
+                });
+                this.searchInput.addEventListener("blur", e => {
+                    saveCacheFilter();
                 });
                 this.searchInput.addEventListener("keydown", e => {
                     e.stopPropagation();
@@ -6719,15 +8225,11 @@
                                     self.openSiteBtn(siteEle, forceTarget, !e.ctrlKey);
                                 }
                             } else {
+                                this.searchJumperInputKeyWords.focus();
                                 if (this.searchJumperInputKeyWords.value) {
-                                    searchWithCurrentFilter(e);
-                                } else {
-                                    this.searchJumperInputKeyWords.focus();
+                                    //searchWithCurrentFilter(e);
                                 }
-                                if (cacheFilter !== self.searchInput.value) {
-                                    cacheFilter = self.searchInput.value;
-                                    storage.setItem("cacheFilter", cacheFilter);
-                                }
+                                saveCacheFilter();
                             }
                             break;
                         case 8://退格
@@ -6747,11 +8249,17 @@
                 this.searchJumperInputKeyWords.addEventListener("input", e => {
                     clearTimeout(inputTimer);
                     inputTimer = setTimeout(() => {
-                        self.getSuggest(self.searchJumperInputKeyWords.value)
-                    }, 500);
+                        if (!isComposing) self.getSuggest(self.searchJumperInputKeyWords.value)
+                    }, 200);
+                });
+                this.searchJumperInputKeyWords.addEventListener('compositionstart', function() {
+                    isComposing = true;
+                });
+                this.searchJumperInputKeyWords.addEventListener('compositionend', function() {
+                    isComposing = false;
                 });
                 this.searchJumperInputKeyWords.addEventListener("keydown", e => {
-                    e.stopPropagation();
+                    if (e.keyCode !== 27) e.stopPropagation();
                     switch(e.keyCode) {
                         case 9:
                             if (!this.inInput) {
@@ -6767,14 +8275,13 @@
                             break;
                         case 13://回车
                             searchWithCurrentFilter(e);
-                            if (cacheFilter !== self.searchInput.value) {
-                                cacheFilter = self.searchInput.value;
-                                storage.setItem("cacheFilter", cacheFilter);
-                            }
                             break;
                         default:
                             break;
                     }
+                }, true);
+                this.con.addEventListener("keypress", e => {
+                    e.stopPropagation();
                 }, true);
                 this.closeBtn.addEventListener("mousedown", e => {
                     self.hideSearchInput();
@@ -6782,7 +8289,7 @@
                         self.highlight("");
                         self.searchJumperInPageInput.value = self.lockWords || "";
                         self.lockWords = "";
-                        self.searchInPageLockWords.innerHTML = createHTML();
+                        setHTML(self.searchInPageLockWords, "");
                         self.setNav(false, true);
                     }
                 });
@@ -6808,7 +8315,7 @@
                 };
 
                 let grabMousemoveHandler = e => {
-                    let halfContainerWidth = 0.4 * window.innerWidth;
+                    let halfContainerWidth = 0.25 * window.innerWidth;
                     let left = startLeft + clientX(e) - startX;
                     self.searchInputDiv.style.top = 'unset';
                     self.searchInputDiv.style.left = left + "px";
@@ -6869,11 +8376,13 @@
                         startY = e.clientY;
                         document.addEventListener("mouseup", grabMouseupHandler);
                         document.addEventListener("mousemove", grabMousemoveHandler);
+                        e.stopPropagation();
+                        e.preventDefault();
                     }
                 });
                 let initWidth, initX;
                 let sizeChangeMouseMove = e => {
-                    let width = e.clientX - initX + initWidth + 20;
+                    let width = e.clientX - initX + initWidth - 10;
                     this.searchInputDiv.style.width = width + "px";
                 };
                 let sizeChangeMouseUp = e => {
@@ -6882,7 +8391,7 @@
                 };
                 this.rightSizeChange.addEventListener("mousedown", e => {
                     initX = e.clientX;
-                    initWidth = this.searchInput.clientWidth * 2 + 2;
+                    initWidth = this.searchInputDiv.clientWidth;
                     document.addEventListener("mousemove", sizeChangeMouseMove);
                     document.addEventListener("mouseup", sizeChangeMouseUp);
                     e.stopPropagation();
@@ -6899,7 +8408,7 @@
                         if (!isPage) {
                             dragSiteBtn.click();
                         } else {
-                            _GM_openInTab(dragSiteBtn.href, {active: false});
+                            _GM_openInTab(dragSiteBtn.href, {active: false, insert: true});
                         }
                         if (isPage) {
                             dragSiteBtn.setAttribute("target", dragSiteBtn.dataset.target == 1 ? "_blank" : "_self");
@@ -6939,7 +8448,7 @@
                 for (let siteConfig of bookmarkTypes) {
                     await this.createType(siteConfig);
                     sitesNum += siteConfig.sites.length;
-                    if (sitesNum > 100) {
+                    if (sitesNum > 200) {
                         await sleep(1);
                         sitesNum = 0;
                     }
@@ -6963,6 +8472,73 @@
                         self.createAddonSpan(name, addon);
                     });
                 }
+                if (this.fontPool.length > 0 || isInConfigPage) {
+                    const baomituUrl = "https://lib.baomitu.com/font-awesome/6.1.2/css/all.css";
+                    let fontAwesomeUrls = [
+                        "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.1.2/css/all.min.css",
+                        "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.1.2/css/all.min.css"
+                    ];
+                    let langLower = (lang || '').toLowerCase();
+                    let isZhHans = langLower === "zh-cn";
+                    if (isZhHans) {
+                        fontAwesomeUrls.unshift(baomituUrl);
+                    }
+                    let customFontAwesomeCss = (searchData.prefConfig.fontAwesomeCss || "").trim();
+                    if (customFontAwesomeCss) {
+                        fontAwesomeUrls.unshift(customFontAwesomeCss);
+                    }
+                    let tryLoadFontAwesome = (index = 0) => {
+                        if (index >= fontAwesomeUrls.length) {
+                            this.buildAllPageGroupTab();
+                            return;
+                        }
+                        let linkEle = document.createElement("link");
+                        linkEle.id = "search-jumper-font-awesome";
+                        linkEle.dataset.configuredUrl = customFontAwesomeCss;
+                        linkEle.rel = "stylesheet";
+                        linkEle.href = fontAwesomeUrls[index];
+                        document.documentElement.insertBefore(linkEle, document.documentElement.children[0]);
+                        let shadowLink = linkEle.cloneNode();
+                        this.addToShadow(shadowLink);
+                        let settled = false;
+                        let fail = () => {
+                            if (settled) return;
+                            settled = true;
+                            clearTimeout(failTimer);
+                            linkEle.remove();
+                            shadowLink.remove();
+                            tryLoadFontAwesome(index + 1);
+                        };
+                        let failTimer = setTimeout(fail, 16000);
+                        linkEle.onerror = fail;
+                        let applyFontAwesome = () => {
+                            if (settled) return;
+                            settled = true;
+                            clearTimeout(failTimer);
+                            let hasFont = false;
+                            this.fontPool.forEach(font => {
+                                font.innerText = '';
+                                font.style.fontSize = '';
+                                font.style.color = '';
+                                hasFont = true;
+                                cacheFontPool.unshift(font);
+                            });
+                            if (hasFont && isInConfigPage) {
+                                setTimeout(() => {cacheFontManager()}, 500);
+                            }
+                            this.buildAllPageGroupTab();
+                        };
+                        linkEle.onload = () => {
+                            if (settled) return;
+                            waitForFontAwesome(() => {
+                                applyFontAwesome();
+                            });
+                        };
+                    };
+                    tryLoadFontAwesome();
+                } else {
+                    this.buildAllPageGroupTab();
+                }
                 if (isAllPage) return;
                 if (disableHighlight && disableHighlight != location.hostname && window.top == window.self) {
                     storage.setItem("disableHighlight", "");
@@ -6975,10 +8551,60 @@
                     this.checkSearchJump();
                 }
 
+                if (/^#sjhl=/.test(location.hash)) {
+                    let sjhlMatch = location.hash.match(/^#sjhl=(.*?)(&i=(\d+))?$/);
+                    let sjhlText = sjhlMatch[1];
+                    let sjhlIndex = parseInt(sjhlMatch[3] || 1) - 1;
+                    try {
+                        sjhlText = decodeURIComponent(sjhlText);
+                    } catch(e) {
+                        console.log(e);
+                    }
+                    this.setInPageWords(sjhlText, () => {
+                        let hlEles = document.querySelectorAll("mark.searchJumper");
+                        let targetHl = hlEles[sjhlIndex];
+                        targetHl && targetHl.scrollIntoView({behavior: "smooth", block: "center", inline: "center"});
+                    });
+                } else this.checkDiscussions();
+
                 let hasHighlightWords = this.initInPageWords && this.initInPageWords.length;
                 if (inMinMode || (this.bar.style.display === "none" && (!navEnable || !hasHighlightWords))) {
                     this.removeBar();
                 }
+            }
+
+            checkDiscussions() {
+                if (location.pathname === '/hoothin/SearchJumper/discussions/new' && location.search === '?category=search-engines') {
+                    let copyTarget = searchData.sitesConfig.filter(type => {return type && !(/^BM/.test(type.type) && type.icon === "bookmark")});
+                    emuInput('textarea[name="discussion[body]"]', "```json\n" + JSON.stringify(copyTarget, null, 2) + "\n```");
+                }
+            }
+
+            buildAllPageGroupTab() {
+                let self = this;
+                setHTML(this.groupTab, "");
+                searchTypes.forEach(type => {
+                    if (type.classList.contains("notmatch")) return;
+                    let typeName = type.dataset.type;
+                    let icon = type.firstElementChild.cloneNode(true);
+                    if (icon.children.length > 1) {
+                        const img = icon.children[1];
+                        img.onload = () => {
+                            icon.children[0].style.display = "none";
+                            img.style.display = "";
+                        };
+                        if (img.complete && img.naturalWidth) img.onload();
+                        if (img.dataset.src) loadIcon(img);
+                    }
+                    let groupSpan = document.createElement("span");
+                    groupSpan.appendChild(icon);
+                    groupSpan.dataset.type = typeName;
+                    groupSpan.addEventListener("click", e => {
+                        let targetType = self.sitelistBox.querySelector(`[data-type="${typeName}"]`);
+                        if (targetType) targetType.scrollIntoView({behavior: "smooth", block: "start", inline: "center"});
+                    });
+                    self.groupTab.appendChild(groupSpan);
+                });
             }
 
             async refreshEngines() {
@@ -6996,12 +8622,16 @@
                     });
                 }
                 searchTypes = [];
+                this.allSiteBtns = [];
+                this.allListBtns = [];
+                this.allLists = [];
                 this.historyTypeEle = null;
                 for (let siteConfig of searchData.sitesConfig) {
                     await this.createType(siteConfig);
                 }
                 this.initHistorySites();
                 this.initSort();
+                this.buildAllPageGroupTab();
                 if (isAllPage) {
                     this.appendBar();
                 }
@@ -7009,7 +8639,13 @@
 
             waitForHide(delay) {
                 let self = this;
-                if (this.bar.classList.contains("grabbing")) return;
+                if (this.bar.classList.contains("grabbing") || this.hiding) return;
+                if (delay === 0) {
+                    this.hiding = true;
+                    setTimeout(() => {
+                        self.hiding = false;
+                    }, 500);
+                }
                 this.touched = false;
                 var hideHandler = () => {
                     //self.bar.classList.remove("search-jumper-isInPage");
@@ -7021,7 +8657,7 @@
                     self.bar.classList.remove("initShow");
                     self.tips.style.opacity = 0;
                     self.tips.style.display = "none";
-                    self.tips.innerHTML = createHTML("");
+                    setHTML(self.tips, "");
                     //self.recoveHistory();
                     if (self.funcKeyCall) {
                         self.setFuncKeyCall(false);
@@ -7029,47 +8665,48 @@
                             self.initPos();
                             let firstType = self.bar.querySelector('.search-jumper-type:nth-child(1)>span');
                             if (firstType && !firstType.classList.contains("search-jumper-open")) {
-                                if (firstType.onmousedown) {
-                                    firstType.onmousedown();
+                                if (firstType.onmouseup) {
+                                    firstType.onmouseup();
                                 } else {
-                                    let mouseEvent = new PointerEvent("mousedown");
+                                    let mouseEvent = new PointerEvent("mouseup");
                                     firstType.dispatchEvent(mouseEvent);
                                 }
                             }
-                            self.bar.style.display = 'none';
-                            setTimeout(() => {
-                                self.bar.style.display = '';
-                            }, 250);
                         } else {
                             self.bar.style.display = 'none';
                         }
                     }
                     if (searchData.prefConfig.autoClose) {
-                        let openType = self.bar.querySelector('.search-jumper-type.search-jumper-open>span');
-                        if (openType) {
-                            if (openType.onmousedown) {
-                                openType.onmousedown();
-                            } else {
-                                let mouseEvent = new PointerEvent("mousedown");
-                                openType.dispatchEvent(mouseEvent);
-                            }
-                        }
+                        self.closeOpenType();
                     }
-                    this.hideTimeout = null;
+                    self.hideTimeout = null;
                 };
                 if (this.hideTimeout) {
                     clearTimeout(this.hideTimeout);
                 }
-                let delayTime = delay || (this.funcKeyCall ? 500 : (searchData.prefConfig.autoDelay || 1000));
+                let delayTime = typeof delay === 'undefined' ? (this.funcKeyCall ? 500 : (searchData.prefConfig.autoDelay || 1000)) : delay;
 
-                this.hideTimeout = setTimeout(hideHandler, delayTime);
+                if (delayTime) {
+                    this.hideTimeout = setTimeout(hideHandler, delayTime);
+                } else hideHandler();
                 if (this.preList) {
                     this.preList.style.visibility = "hidden";
                     this.listArrow.style.cssText = "";
                 }
             }
 
-            setInPageWords(inPageWords, cb) {
+            searchEngineWords(words) {
+                words = words.replace(/( |^)-\S+/g, "");
+                if (/".+"/.test(words)) {
+                    words = words.replace(/"(.+)"/g, (match, p, offset, string) => {
+                        return `◎${p}◎`;
+                    }).replace(/^◎|◎$/g, "");
+                }
+                this.lastSearchEngineWords = words.replace(/['";]/g, ' ');
+                return this.lastSearchEngineWords;
+            }
+
+            setInPageWords(inPageWords, cb, init) {
                 this.initInPageWords.push(inPageWords);
                 //this.searchInPageTab.checked = true;
                 this.con.classList.add("in-find");
@@ -7082,14 +8719,17 @@
                             while (document.hidden) {
                                 await sleep(1000);
                             }
+                            storage.setItem("lastHighlight", location.hostname);
                             let word = this.initInPageWords.shift();
                             while (word) {
                                 this.searchJumperInPageInput.value = word;
-                                this.submitInPageWords(true);
+                                this.submitInPageWords(!!init);
                                 word = this.initInPageWords.shift();
                             }
                         }
                         if (cb) cb();
+                        await sleep(100);
+                        storage.setItem("lastHighlight", "");
                     }, 300);
                 };
                 if (document.readyState != "complete") {
@@ -7109,7 +8749,6 @@
 
             searchInPageRule() {
                 if (searchData.prefConfig.disableAutoHighlight) {
-                    let href = location.href.slice(0, 250);
                     let sites = searchData.prefConfig.disableAutoHighlight.trim().split("\n");
                     for (let i = 0; i < sites.length; i++) {
                         let key = sites[i], isMatch = false;
@@ -7127,8 +8766,10 @@
                         }
                     }
                 }
+                if (lastHighlight === location.hostname) {
+                    this.disableAutoHighlight = true;
+                }
                 if (searchData.prefConfig.inPageRule) {
-                    let href = location.href.slice(0, 250);
                     let keys = Object.keys(searchData.prefConfig.inPageRule);
                     for (let i = 0; i < keys.length; i++) {
                         let key = keys[i];
@@ -7158,13 +8799,18 @@
                 if (this.inPageRuleKey || this.disableAutoHighlight) return;
                 let inPageWords;
                 if (searchData.prefConfig.showInSearchJumpPage && referrer && !disableHighlight) {
-                    if (curRef.indexOf(referrer) != -1) {
+                    let noreferrerLink = !curRef && clickLink && location.href.indexOf(clickLink) != -1;
+                    if (noreferrerLink) {
+                        storage.setItem("clickLink", '');
+                    }
+                    if ((curRef && curRef.indexOf(referrer) != -1) || noreferrerLink) {
                         if (cacheKeywords) {
                             this.wordModeBtn.classList.add("checked");
                         }
                         inPageWords = cacheKeywords;
                         try {
                             inPageWords = decodeURIComponent(inPageWords);
+                            inPageWords = this.searchEngineWords(inPageWords);
                         } catch (e) {}
                         //storage.setItem("referrer", location.hostname);
                     } else {
@@ -7177,7 +8823,7 @@
                     let self = this;
                     this.setInPageWords(inPageWords, () => {
                         if (!self.navMarks.innerHTML && self.bar.style.display === "none") self.removeBar();
-                    });
+                    }, true);
                 } else if (!this.searchJumperInPageInput.value && curRef.indexOf(referrer) != -1 && cacheKeywords) {
                     inPageWords = cacheKeywords;
                     this.wordModeBtn.classList.add("checked");
@@ -7211,20 +8857,21 @@
                 }
                 this.insertHistory(this.currentType, true);
                 this.wordModeBtn.classList.add("checked");
-                let inPageWords = searchData.prefConfig.showInSearchEngine ? localKeywords : globalInPageWords;
+                let inPageWords = searchData.prefConfig.showInSearchEngine ? this.searchEngineWords(localKeywords) : globalInPageWords;
                 if (inPageWords) {
-                    this.setInPageWords(inPageWords.replace(/['";]/g, ' '));
+                    this.setInPageWords(inPageWords, null, true);
                 }
             }
 
             getSuggest(searchWords) {
                 let suggestDatalist = this.suggestDatalist;
-                suggestDatalist.innerHTML = createHTML();
+                setHTML(suggestDatalist, "");
                 if (!searchWords) return;
-                let requestSuggest = (api, cb) => {
+                let requestSuggest = (api, cb, charset) => {
                     _GM_xmlhttpRequest({
                         method: 'GET',
                         url: api,
+                        responseType: charset ? 'blob' : '',
                         headers: {
                             referer: api,
                             origin: api
@@ -7232,7 +8879,15 @@
                         onload: function(d) {
                             let response = d.response;
                             if (d.status >= 400 || !response) return;
-                            cb(response);
+                            if (charset) {
+                                let reader = new FileReader();
+                                reader.onload = () => {
+                                    cb(reader.result);
+                                }
+                                reader.readAsText(response, charset);
+                            } else {
+                                cb(response);
+                            }
                         },
                         onerror: function(e){
                             debug(e);
@@ -7251,7 +8906,7 @@
                 }
                 switch (searchData.prefConfig.suggestType) {
                     case "google":
-                        requestSuggest("http://suggestqueries.google.com/complete/search?client=youtube&q=%s&jsonp=window.google.ac.h".replace("%s", searchWords), res => {
+                        requestSuggest("https://suggestqueries.google.com/complete/search?client=youtube&q=%s&jsonp=window.google.ac.h".replace("%s", searchWords), res => {
                             res = res.match(/window.google.ac.h\((.*)\)$/, "$1");
                             if (res) {
                                 res = JSON.parse(res[1])[1];
@@ -7264,7 +8919,7 @@
                         });
                         break;
                     case "baidu":
-                        requestSuggest("http://suggestion.baidu.com/su?wd=%s&cb=".replace("%s", searchWords), res => {
+                        requestSuggest("https://suggestion.baidu.com/su?wd=%s&cb=".replace("%s", searchWords), res => {
                             res = res.match(/.*,s:(.*)}\);$/, "$1");
                             if (res) {
                                 res = JSON.parse(res[1]);
@@ -7274,10 +8929,10 @@
                                     suggestDatalist.appendChild(option);
                                 }
                             }
-                        });
+                        }, "GBK");
                         break;
                     case "bing":
-                        requestSuggest("http://api.bing.com/qsonhs.aspx?type=json&q=%s".replace("%s", searchWords), res => {
+                        requestSuggest("https://api.bing.com/qsonhs.aspx?type=json&q=%s".replace("%s", searchWords), res => {
                             if (res) {
                                 res = JSON.parse(res).AS.Results;
                                 for (let i in res) {
@@ -7321,7 +8976,7 @@
                     type.classList.add("input-hide");
                 });
                 let optionNum = 0;
-                this.filterGlob.innerHTML = createHTML();
+                setHTML(this.filterGlob, "");
                 this.allSiteBtns.forEach(arr => {
                     let btn = arr[0];
                     let data = arr[1];
@@ -7355,14 +9010,14 @@
                             if (!btn.dataset.host) {
                                 let hostReg = /^https?:\/\/([^\/]*)\/[\s\S]*$/;
                                 let href = data.url;
-                                btn.dataset.host = hostReg.test(href) ? href.replace(hostReg, "$1") : href;
-                                if (btn.dataset.host) btn.dataset.host = btn.dataset.host.toLowerCase();
+                                let host = hostReg.test(href) ? href.replace(hostReg, "$1") : href;
+                                btn.dataset.host = host && host.split("\n")[0].toLowerCase();
                             }
                             canMatch = this.globMatch(inputWords, btn.dataset.host);
                         }
                         if (!canMatch) {
                             btn.classList.add("input-hide");
-                        } else {
+                        } else if(btn.dataset.isPage) {
                             globMatchName += '^' + btn.dataset.host + '$';
                         }
                     }
@@ -7378,10 +9033,13 @@
                         }
                         if (listItem) listItem.classList.remove("input-hide");
                         if (optionNum < 50 && inputWords && this.searchInput.value !== globMatchName) {
-                            optionNum++;
-                            let option = document.createElement('option');
-                            option.value = globMatchName;
-                            this.filterGlob.appendChild(option);
+                            const isExist = this.filterGlob.querySelector(`option[value="${CSS.escape(globMatchName)}"]`);
+                            if (!isExist) {
+                                optionNum++;
+                                let option = document.createElement('option');
+                                option.value = globMatchName;
+                                this.filterGlob.appendChild(option);
+                            }
                         }
                     }
                 });
@@ -7402,10 +9060,10 @@
                 if (showType) {
                     if (!showType.classList.contains("search-jumper-open")) {
                         let typeBtn = showType.querySelector("span.search-jumper-btn");
-                        if (typeBtn.onmousedown) {
-                            typeBtn.onmousedown();
+                        if (typeBtn.onmouseup) {
+                            typeBtn.onmouseup();
                         } else {
-                            let mouseEvent = new PointerEvent("mousedown");
+                            let mouseEvent = new PointerEvent("mouseup");
                             typeBtn.dispatchEvent(mouseEvent);
                         }
                     }
@@ -7486,9 +9144,6 @@
                     clearTimeout(this.refreshInPageTimer);
                 }
                 this.refreshInPageTimer = setTimeout(() => {
-                    let oldWords = this.curHighlightWords;
-                    this.highlight("");
-                    this.highlight(oldWords);
                     if (this.bar.style.display == "none") {
                         currentSite = null;
                         let typeData;
@@ -7508,20 +9163,20 @@
                                 let currentData;
                                 if (data.match === '0') {
                                 } else if (data.match) {
-                                    if (new RegExp(data.match).test(location.href)) {
+                                    if (new RegExp(data.match).test(href)) {
                                         currentData = data;
                                     }
                                 } else if (data.url.indexOf(location.hostname) != -1) {
                                     if (data.url.indexOf("site") != -1) {
                                         let siteMatch = data.url.match(/site(%3A|:)([\s\S]+?)[\s%]/);
-                                        if (siteMatch && location.href.indexOf(siteMatch[2]) != -1 && data.url.replace(siteMatch[0], "").indexOf(location.hostname) != -1) {
+                                        if (siteMatch && href.indexOf(siteMatch[2]) != -1 && data.url.replace(siteMatch[0], "").indexOf(location.hostname) != -1) {
                                             currentData = data;
                                         }
                                     } else if (!currentSite && data.url.replace(/^https?:\/\//, "").replace(location.host, "").replace(/\/?[\?#][\s\S]*/, "") == location.pathname.replace(/\/$/, "")) {
                                         let urlReg = data.url.match(/[^\/\?&]+(?=%[stb])/g);
                                         if (urlReg) {
                                             urlReg = urlReg.join('.*');
-                                            if (new RegExp(urlReg).test(location.href)) {
+                                            if (new RegExp(urlReg).test(href)) {
                                                 currentData = data;
                                             }
                                         }
@@ -7550,15 +9205,29 @@
                             if (typeBtn && !typeBtn.classList.contains("search-jumper-open")) {
                                 this.bar.insertBefore(typeBtn.parentNode, this.bar.children[0]);
                                 if (!searchData.prefConfig.disableAutoOpen && !searchData.prefConfig.disableTypeOpen) {
-                                    if (typeBtn.onmousedown) {
-                                        typeBtn.onmousedown();
+                                    if (typeBtn.onmouseup) {
+                                        typeBtn.onmouseup();
                                     } else {
-                                        let mouseEvent = new PointerEvent("mousedown");
+                                        let mouseEvent = new PointerEvent("mouseup");
                                         typeBtn.dispatchEvent(mouseEvent);
                                     }
                                 }
                             }
                         }
+                    }
+                    let oldWords = this.curHighlightWords;
+                    this.highlight("");
+                    if (currentSite && searchData.prefConfig.showInSearchEngine) {
+                        let oldKeywords = this.lastSearchEngineWords;
+                        let newKeywords = this.searchEngineWords(getKeywords());
+                        if (newKeywords && oldKeywords != newKeywords) {
+                            let targetWords = this.anylizeInPageWords(newKeywords, true);
+                            this.highlight(targetWords);
+                        } else {
+                            oldWords && this.highlight(oldWords);
+                        }
+                    } else if (oldWords) {
+                        this.highlight(oldWords);
                     }
                 }, 500);
             }
@@ -7603,6 +9272,11 @@
 
             initHistorySites() {
                 this.historySiteBtns = [];
+                this.txtHistorySiteBtns = [];
+                this.imgHistorySiteBtns = [];
+                this.linkHistorySiteBtns = [];
+                this.videoHistorySiteBtns = [];
+                this.audioHistorySiteBtns = [];
                 let self = this;
                 historySites.forEach(async n => {
                     for (let siteConfig of searchData.sitesConfig) {
@@ -7611,9 +9285,24 @@
                         for (let i = 0; i < siteConfig.sites.length; i++) {
                             let site = siteConfig.sites[i];
                             if (site.name == n) {
-                                let siteBtn = await self.createSiteBtn((searchData.prefConfig.noIcons ? "0" : site.icon), site, true, isBookmark, siteConfig);
+                                let siteBtn = await self.createSiteBtn((searchData.prefConfig.noIcons ? "0" : site.icon), site, true, isBookmark, siteConfig, true);
                                 siteBtn.classList.add("historySite");
                                 self.historySiteBtns.push(siteBtn);
+                                if (!siteConfig.selectImg && !siteConfig.selectLink && !siteConfig.selectPage && !siteConfig.selectVideo && !siteConfig.selectAudio) {
+                                    self.txtHistorySiteBtns.push(siteBtn);
+                                }
+                                if (siteConfig.selectImg) {
+                                    self.imgHistorySiteBtns.push(siteBtn);
+                                }
+                                if (siteConfig.selectLink || siteConfig.selectPage) {
+                                    self.linkHistorySiteBtns.push(siteBtn);
+                                }
+                                if (siteConfig.selectVideo) {
+                                    self.videoHistorySiteBtns.push(siteBtn);
+                                }
+                                if (siteConfig.selectAudio) {
+                                    self.audioHistorySiteBtns.push(siteBtn);
+                                }
                                 found = true;
                                 break;
                             }
@@ -7644,13 +9333,24 @@
                         }
                     }
                 }
-                for (let i = 0; i < this.historySiteBtns.length; i++) {
-                    let btn = this.historySiteBtns[i];
+                let historySiteBtns = this.historySiteBtns;
+                if (typeEle.classList.contains("search-jumper-needInPage")) {
+                    historySiteBtns = this.txtHistorySiteBtns;
+                } else if (typeEle.classList.contains("search-jumper-targetImg")) {
+                    historySiteBtns = this.imgHistorySiteBtns;
+                } else if (typeEle.classList.contains("search-jumper-targetAudio")) {
+                    historySiteBtns = this.audioHistorySiteBtns;
+                } else if (typeEle.classList.contains("search-jumper-targetVideo")) {
+                    historySiteBtns = this.videoHistorySiteBtns;
+                } else if (typeEle.classList.contains("search-jumper-targetLink") || typeEle.classList.contains("search-jumper-targetPage")) {
+                    historySiteBtns = this.linkHistorySiteBtns;
+                }
+                for (let i = 0; i < historySiteBtns.length; i++) {
+                    let btn = historySiteBtns[i];
                     if (btn.style.display == "none") continue;
                     let siteImg = btn.querySelector('img');
                     if (siteImg && siteImg.dataset.src) {
-                        siteImg.src = siteImg.dataset.src;
-                        delete siteImg.dataset.src;
+                        loadIcon(siteImg);
                     }
                     if (btn.parentNode != typeEle) {
                         let sites = typeEle.querySelectorAll("a.search-jumper-btn");
@@ -7713,12 +9413,19 @@
                 if (siteEle.href) a.href = siteEle.href;
                 a.style.display = siteEle.style.display;
                 a.addEventListener('mousedown', async e => {
-                    await self.siteSetUrl(siteEle, {button: e.button, altKey: e.altKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, metaKey: e.metaKey});
-                    if (siteEle.href) a.href = siteEle.href;
-                    a.setAttribute("target", siteEle.target);
+                    if (siteEle.dataset.showTips) {
+                        if (self.con.classList.contains("search-jumper-showall")) {
+                            targetElement = a.parentNode;
+                        } else self.waitForHide(0);
+                        siteEle.dispatchEvent(new CustomEvent('showTips', {detail: a}));
+                    } else {
+                        await self.siteSetUrl(siteEle, {button: e.button, altKey: e.altKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, metaKey: e.metaKey});
+                        if (siteEle.href) a.href = siteEle.href;
+                        a.setAttribute("target", siteEle.target);
+                    }
                     if (!a.onclick) {
                         a.onclick = e => {
-                            siteEle.click();
+                            if (!siteEle.dataset.showTips) siteEle.click();
                             e.stopPropagation();
                             e.preventDefault();
                             return false;
@@ -7755,17 +9462,34 @@
                 let self = this;
                 let list = document.createElement("div");
                 list.className = "sitelist";
+                list.style.visibility = "hidden";
                 let con = document.createElement("div");
                 con.className = "sitelistCon";
                 list.appendChild(con);
+                list.addEventListener('mouseenter', e => {
+                    self.listArrow.style.cssText = "";
+                });
                 let title = document.createElement("p");
-                title.innerText = type.dataset.title;
+                const titleText = document.createElement('span');
+                titleText.textContent = type.dataset.title;
+                title.appendChild(titleText);
                 title.title = i18n('batchOpen');
                 title.addEventListener('click', e => {
                     self.batchOpen(batchSiteNames, {ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey, button: (e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) ? 0 : 2});
                 });
                 list.dataset.type = type.dataset.type;
                 con.appendChild(title);
+                if (splitEnabled && !isSplitPage) {
+                    const splitButton = document.createElement('button');
+                    splitButton.type = 'button';
+                    splitButton.textContent = i18n('split').button;
+                    splitButton.className = 'search-jumper-split-btn';
+                    splitButton.addEventListener('click', event => {
+                        event.stopPropagation();
+                        self.openSplitSearch(batchSiteNames).catch(error => window.alert(error.message));
+                    });
+                    title.appendChild(splitButton);
+                }
                 function createItem(siteEle, index) {
                     let li = document.createElement("div");
                     li.id = "list" + index;
@@ -7778,30 +9502,12 @@
                     if (icon && !searchData.prefConfig.noIcons) {
                         let iconSrc = icon.src || icon.dataset.src;
                         let img = document.createElement("img");
-                        a.appendChild(img);
-                        img.onload = e => {
-                            img.style.width = "";
-                            img.style.height = "";
-                            img.style.display = "";
-                        };
-                        img.style.width = "1px";
-                        img.style.height = "1px";
-                        img.style.display = "none";
+                        let imgCon = document.createElement("div");
+                        imgCon.appendChild(img);
+                        a.appendChild(imgCon);
+                        img.src = noImgBase64;
                         if (iconSrc) {
-                            if (!/^data:/.test(iconSrc)) {
-                                img.οnerrοr = e => {
-                                    img.src = noImgBase64;
-                                    img.onerror = null;
-                                    img.style.width = "";
-                                    img.style.height = "";
-                                    img.style.display = "";
-                                };
-                                img.dataset.src = iconSrc;
-                            } else {
-                                img.dataset.src = iconSrc;
-                            }
-                        } else {
-                            img.dataset.src = noImgBase64;
+                            img.dataset.src = iconSrc;
                         }
                     }
                     let p = document.createElement("p");
@@ -7826,23 +9532,32 @@
                 return list;
             }
 
-            initList(list) {
+            async initList(list) {
                 if (!list.dataset.inited) {
+                    list.style.display = "none";
                     list.dataset.inited = true;
-                    [].forEach.call(list.querySelectorAll("div>a>img"), img => {
+                    [].forEach.call(list.querySelectorAll("div>a>div>img"), img => {
                         if (img.dataset.src) {
-                            img.src = img.dataset.src;
+                            if (ext) {
+                                loadIcon(img);
+                                return;
+                            }
+                            const imgSrc = img.dataset.src;
+                            preloadImage(imgSrc, () => {
+                                img.src = imgSrc;
+                            });
                             delete img.dataset.src;
                         }
                     });
+                    await sleep(0);
                 }
             }
 
-            listPos(ele, list) {
+            async listPos(ele, list) {
                 //if (this.preList) {
                 //this.preList.style.visibility = "hidden";
                 //}
-                this.initList(list);
+                await this.initList(list);
                 list.style = "";
                 this.preList = list;
                 let ew = ele.clientWidth;
@@ -7861,7 +9576,36 @@
                 let arrowStyle = this.listArrow.style;
                 arrowStyle.visibility = "visible";
                 arrowStyle.opacity = 1;
-                if (this.bar.clientWidth > this.bar.clientHeight) {
+                if (this.funcKeyCall) {
+                    list.style.display = "block";
+                    arrowStyle.opacity = 0;
+
+                    const clientRect = ele.getBoundingClientRect();
+                    clientX = clientRect.x + ew / 2 - this.con.scrollLeft;
+                    clientY = clientRect.y + eh / 2 - this.con.scrollTop;
+
+                    clientX -= list.clientWidth / 2;
+                    let actualTop = ele.getBoundingClientRect().top;
+                    if (actualTop > viewHeight / 2) {
+                        if (actualTop < list.clientHeight + 10) {
+                            list.style.height = actualTop - 20 + "px";
+                        }
+                        clientY -= (list.clientHeight + eh / 2 + 5);
+                    } else {
+                        clientY += (eh / 2 + 5);
+                        if (actualTop + list.clientHeight + eh + 10 > viewHeight) {
+                            list.style.height = viewHeight - actualTop - eh - 20 + "px";
+                        }
+                    }
+                    if (clientX < 20) clientX = 20;
+                    let maxLeft = viewWidth - list.clientWidth - 30;
+                    if (clientX > maxLeft) {
+                        clientX = maxLeft;
+                    }
+                    list.style.left = clientX + "px";
+                    list.style.top = clientY + "px";
+                    list.style.display = "";
+                } else if (this.bar.clientWidth > this.bar.clientHeight) {
                     //横
                     let arrowX = clientX;
                     if (clientX < 30) {
@@ -7875,7 +9619,7 @@
                         arrowStyle.top = this.bar.clientHeight - 10 + "px";
                     } else {
                         list.style.bottom = this.bar.clientHeight + "px";
-                        arrowStyle.bottom = this.bar.clientHeight - 10 + "px";
+                        arrowStyle.bottom = this.bar.clientHeight - 9 + "px";
                     }
                     clientX -= list.scrollWidth / 2;
                     if (clientX > viewWidth - list.scrollWidth - 10) clientX = viewWidth - list.scrollWidth - 10;
@@ -7901,6 +9645,7 @@
                     if (clientY > viewHeight - list.scrollHeight) clientY = viewHeight - list.scrollHeight;
                     if (clientY < 0) clientY = 0;
                     list.style.top = clientY + "px";
+                    list.style.maxHeight = "100vh";
                 }
             }
 
@@ -7910,35 +9655,67 @@
                 //}
                 let ew = clingEle.clientWidth || clingEle.offsetWidth;
                 let eh = clingEle.clientHeight || clingEle.offsetHeight;
-                let clientX = clingEle.offsetLeft + ew / 2 - this.con.scrollLeft;
+                /*let clientX = clingEle.offsetLeft + ew / 2 - this.con.scrollLeft;
                 let clientY = clingEle.offsetTop + eh / 2 - this.con.scrollTop - clingEle.parentNode.scrollTop;
-                let current = clingEle.offsetParent;
+                let current = clingEle.offsetParent;*/
+
+                const clientRect = clingEle.getBoundingClientRect();
+
+                let clientX, clientY;
+
                 let showall = this.con && this.con.classList.contains("search-jumper-showall");
 
-                while (current !== null){
+                /*while (current !== null){
                     clientX += current.offsetLeft;
                     clientY += current.offsetTop;
                     current = current.offsetParent;
-                }
+                }*/
                 let viewWidth = window.innerWidth || document.documentElement.clientWidth;
                 let viewHeight = window.innerHeight || document.documentElement.clientHeight;
-                if (showall) {
-                    clientX -= target.scrollWidth / 2 - this.con.scrollLeft;
+                this.tips.style.position = "";
+                target.style.height = "";
+                target.style.position = "";
+                if (!clingEle || /^(body|html)$/i.test(clingEle.nodeName)) {
+                    this.tips.style.transition = "none";
+                    this.tips.style.position = "fixed";
+                    target.style.right = "";
+                    target.style.bottom = "";
+                    target.style.left = (viewWidth - target.clientWidth) / 2 + "px";
+                    target.style.top = "min(11%,110px)";
+                } else if (showall) {
+                    clientX = clientRect.x + ew / 2;
+                    clientY = clientRect.y + eh / 2;
+                    clientX -= target.clientWidth / 2 - this.con.scrollLeft;
                     clientY += this.con.scrollTop;
-                    if (clientY > viewHeight / 2) clientY -= (target.scrollHeight + eh / 2 + 10);
+                    if (clientY > viewHeight / 2) clientY -= (target.clientHeight + eh / 2 + 10);
                     else clientY += (eh / 2 + 10);
                     target.style.right = "";
                     target.style.bottom = "";
                     target.style.left = clientX + "px";
                     target.style.top = clientY + "px";
-                } else if (this.funcKeyCall) {
-                    clientX -= target.scrollWidth / 2;
+                } else if (this.funcKeyCall || !clingEle.classList.contains("search-jumper-btn")) {
+                    target.style.position = "absolute";
+                    let scrollTop = window.pageYOffset || document.documentElement.scrollTop || getBody(document).scrollTop;
+                    let scrollLeft = window.pageXOffset || document.documentElement.scrollLeft || getBody(document).scrollLeft;
+
+                    clientX = clientRect.x + ew / 2 - (this.funcKeyCall ? this.con.scrollLeft - scrollLeft : 0);
+                    clientY = clientRect.y + eh / 2 - (this.funcKeyCall ? this.con.scrollTop - scrollTop : 0);
+
+                    clientX -= target.clientWidth / 2;
                     let actualTop = clingEle.getBoundingClientRect().top;
-                    if (actualTop > viewHeight / 2) clientY -= (target.scrollHeight + eh / 2 + 5);
-                    else clientY += (eh / 2 + 5);
+                    if (actualTop > viewHeight / 2) {
+                        if (actualTop < target.clientHeight + 10) {
+                            target.style.height = actualTop - 20 + "px";
+                        }
+                        clientY -= (target.clientHeight + eh / 2 + 5);
+                    } else {
+                        clientY += (eh / 2 + 5);
+                        if (actualTop + target.clientHeight + eh + 10 > viewHeight) {
+                            target.style.height = viewHeight - actualTop - eh - 20 + "px";
+                        }
+                    }
                     if (clientX < 20) clientX = 20;
-                    let scrollLeft = document.documentElement.scrollLeft || document.body.scrollLeft;
-                    let maxLeft = viewWidth + scrollLeft - target.scrollWidth - 30;
+                    let maxLeft = viewWidth + scrollLeft - target.clientWidth - 30;
                     if (clientX > maxLeft) {
                         clientX = maxLeft;
                     }
@@ -7946,72 +9723,158 @@
                     target.style.bottom = "";
                     target.style.left = clientX + "px";
                     target.style.top = clientY + "px";
-                } else if (clientY < eh) {
-                    clientX -= target.scrollWidth / 2;
-                    clientY += target.scrollHeight / 2;
-                    if (clientX < 5) {
-                        clientX = 5;
-                        target.style.left = "5px";
-                        target.style.right = "";
-                        target.style.bottom = "";
-                    } else if (clientX > viewWidth - target.scrollWidth) {
-                        target.style.left = "";
-                        target.style.right = "5px";
-                        target.style.bottom = "";
-                    } else {
-                        target.style.left = clientX + "px";
-                        target.style.right = "";
-                        target.style.bottom = "";
-                    }
-                    target.style.top = (close ? eh : eh + 20) + "px";
-                } else if (clientY > viewHeight - eh) {
-                    clientX -= target.scrollWidth / 2;
-                    if (clientX < 5) {
-                        target.style.left = "5px";
-                        target.style.right = "";
-                        target.style.top = "";
-                    } else if (clientX > viewWidth - target.scrollWidth) {
-                        target.style.left = "";
-                        target.style.right = "5px";
-                        target.style.top = "";
-                    } else {
-                        target.style.left = clientX + "px";
-                        target.style.right = "";
-                        target.style.top = "";
-                    }
-                    target.style.bottom = (close ? eh : eh + 20) + "px";
-                } else if (clientX > viewWidth - ew - 10) {
-                    target.style.left = "";
-                    target.style.bottom = "";
-                    clientY -= target.scrollHeight / 2;
-                    if (clientY < 5) clientY = 5;
-                    target.style.right = (close ? ew : ew + 20) + "px";
-                    target.style.top = clientY + "px";
-                } else if (clientX < ew) {
-                    target.style.right = "";
-                    target.style.bottom = "";
-                    clientY -= target.scrollHeight / 2;
-                    if (clientY < 5) clientY = 5;
-                    target.style.left = (close ? ew : ew + 20) + "px";
-                    target.style.top = clientY + "px";
                 } else {
-                    target.style.right = "";
-                    target.style.bottom = "";
-                    target.style.left = clientX + "px";
-                    target.style.top = clientY + "px";
+                    clientX = clingEle.offsetLeft + ew / 2 - this.con.scrollLeft - clingEle.parentNode.scrollLeft;
+                    clientY = clingEle.offsetTop + eh / 2 - this.con.scrollTop - clingEle.parentNode.scrollTop;
+                    let current = clingEle.offsetParent;
+                    while (current !== null){
+                        clientX += current.offsetLeft;
+                        clientY += current.offsetTop;
+                        current = current.offsetParent;
+                    }
+                    if (clientY < eh) {
+                        clientX -= target.clientWidth / 2;
+                        clientY += target.clientHeight / 2;
+                        if (clientX < 5) {
+                            clientX = 5;
+                            target.style.left = "5px";
+                            target.style.right = "";
+                            target.style.bottom = "";
+                        } else if (clientX > viewWidth - target.clientWidth) {
+                            target.style.left = "";
+                            target.style.right = "5px";
+                            target.style.bottom = "";
+                        } else {
+                            target.style.left = clientX + "px";
+                            target.style.right = "";
+                            target.style.bottom = "";
+                        }
+                        target.style.top = (close ? eh : eh + 20) + "px";
+                    } else if (clientY > viewHeight - eh - 10) {
+                        clientX -= target.clientWidth / 2;
+                        if (clientX < 5) {
+                            target.style.left = "5px";
+                            target.style.right = "";
+                            target.style.top = "";
+                        } else if (clientX > viewWidth - target.clientWidth) {
+                            target.style.left = "";
+                            target.style.right = "5px";
+                            target.style.top = "";
+                        } else {
+                            target.style.left = clientX + "px";
+                            target.style.right = "";
+                            target.style.top = "";
+                        }
+                        target.style.bottom = (close ? eh : eh + 20) + "px";
+                    } else if (clientX > viewWidth - ew - 10) {
+                        target.style.left = "";
+                        target.style.bottom = "";
+                        clientY -= target.clientHeight / 2;
+                        if (clientY < 5) clientY = 5;
+                        target.style.right = (close ? ew : ew + 20) + "px";
+                        target.style.top = clientY + "px";
+                    } else if (clientX < ew) {
+                        target.style.right = "";
+                        target.style.bottom = "";
+                        clientY -= target.clientHeight / 2;
+                        if (clientY < 5) clientY = 5;
+                        target.style.left = (close ? ew : ew + 20) + "px";
+                        target.style.top = clientY + "px";
+                    } else {
+                        target.style.right = "";
+                        target.style.bottom = "";
+                        target.style.left = clientX + "px";
+                        target.style.top = clientY + "px";
+                    }
                 }
             }
 
-            tipsPos(ele, type) {
-                this.tips.innerHTML = createHTML(type);
+            tipsPos(ele, type, inputGroup) {
+                setHTML(this.tips, type);
+                let complexTipsCon = this.tips.querySelector('div');
+                if (complexTipsCon && !this.tips.querySelector('[data-close]')) {
+                    let closeBtn = document.createElement('span');
+                    closeBtn.dataset.close = true;
+                    closeBtn.innerText = '×';
+                    complexTipsCon.appendChild(closeBtn);
+                }
+                if (inputGroup) {
+                    this.tips.insertBefore(inputGroup, this.tips.firstChild);
+                }
+                if (location.protocol === 'https:') {
+                    [].forEach.call(this.tips.querySelectorAll("[src^='http:']"), ele => {
+                        ele.src = ele.src.replace("http:", "https:")
+                    });
+                }
+                this.tips.style.pointerEvents = "";
                 this.tips.style.display = "";
                 this.tips.style.opacity = 1;
                 this.clingPos(ele, this.tips);
+                clearTimeout(this.hideTips);
                 if (this.tips.style.transition) {
                     setTimeout(() => {
                         this.tips.style.transition = "";
                     }, 1);
                 }
+                let self = this;
+                [].forEach.call(this.tips.querySelectorAll('iframe'), iframe => {
+                    let html = iframe.innerHTML;
+                    if (html) {
+                        setHTML(iframe, "");
+                        if (iframe.src) {
+                            iframe.addEventListener('load', e => {
+                                try {
+                                    if (!iframe || !iframe.parentNode) return;
+                                    let doc = iframe.contentDocument || iframe.contentWindow.document;
+                                    let div = doc.createElement('div');
+                                    doc.body.appendChild(div);
+                                    replaceOuterHTML(div, html, doc);
+                                } catch(e) {}
+                            });
+                        } else {
+                            try {
+                                let doc = iframe.contentDocument || iframe.contentWindow.document;
+                                doc.open();
+                                doc.write(html);
+                                doc.close();
+                            } catch(e) {}
+                        }
+                    }
+                });
+                [].forEach.call(this.tips.querySelectorAll('img,video'), media => {
+                    media.addEventListener('load', e => {
+                        self.clingPos(ele, self.tips);
+                    });
+                });
+                if (window.markdownit) {
+                    if (!self.md) {
+                        self.md = window.markdownit();
+                    }
+                    [].forEach.call(this.tips.querySelectorAll('.markdown'), markdown => {
+                        setHTML(markdown, self.md.render(markdown.innerHTML));
+                    });
+                }
+            }
+
+            checkKwFilter(kwFilter, checkKw) {
+                if (checkKw.length > 600) {
+                    checkKw = checkKw.slice(0, 500) + checkKw.slice(checkKw.length - 10);
+                }
+                let selectorMatch = kwFilter.match(/^@{(.*?)}/);
+                if (selectorMatch) {
+                    if (!targetElement) return false;
+                    let selector = selectorMatch[1];
+                    let pass = [].some.call(getAllElements(selector, document), e => e === targetElement);
+                    if (!pass) return false;
+                    kwFilter = kwFilter.replace(selectorMatch[0], "");
+                }
+                let kwRe, fullMatch = kwFilter.match(/^\/(.*)\/(\w*)$/);
+                if (fullMatch) {
+                    kwRe = new RegExp(fullMatch[1], fullMatch[2]);
+                } else {
+                    kwRe = new RegExp(kwFilter, "i");
+                }
+                return (kwRe.test(checkKw || ""));
             }
 
             async createType(data) {
@@ -8035,7 +9898,7 @@
                     ele.style.display = 'none';
                     ele.classList.add("notmatch");
                 } else if (data.match) {
-                    if (new RegExp(data.match).test(location.href) == false) {
+                    if (new RegExp(data.match).test(href) == false) {
                         ele.style.display = 'none';
                         ele.classList.add("notmatch");
                     } else {
@@ -8074,27 +9937,30 @@
                         }
                     };
                     if (isFontIcon) {
-                        let cache = searchData.prefConfig.cacheSwitch && cacheIcon[icon.trim().replace(/ /g, '_')];
+                        let cache = (!ext || searchData.prefConfig.cacheSwitch) && cacheIcon[icon.trim().replace(/ /g, '_')];
                         if (cache === 'fail' || !cache) {
                             iEle.className = icon.indexOf("fa") === 0 ? icon : "fa fa-" + icon;
                             this.fontPool.push(iEle);
                         } else {
-                            img.src = cache;
-                            img.style.width = '100%';
-                            img.style.height = '100%';
-                            typeBtn.appendChild(img);
+                            // Use the cached glyph's alpha so its color still follows the theme.
+                            iEle.innerText = '';
+                            iEle.style.backgroundColor = 'currentColor';
+                            iEle.style.mask = 'url(' + JSON.stringify(cache) + ') center / contain no-repeat';
                         }
                     } else {
                         let isBase64 = /^data:/.test(icon);
                         if (isBase64) {
                             img.src = icon;
+                        } else if (ext) {
+                            loadIcon(img, icon);
+                            if (!isBookmark) cachePool.push(img);
                         } else {
                             let cache = searchData.prefConfig.cacheSwitch && cacheIcon[icon];
                             if (cache === 'fail') {
                             } else if (cache) {
                                 img.src = cache;
                             } else {
-                                img.src = icon;
+                                loadIcon(img, icon);
                                 if (!cacheIcon[icon] && !isBookmark) cachePool.push(img);
                             }
                         }
@@ -8102,7 +9968,10 @@
                     }
                 }
                 ele.addEventListener('mouseleave', e => {
-                    self.listArrow.style.opacity = "";
+                    self.listArrow.style.cssText = "";
+                    self.dockerScaleBtns.forEach(btn => {
+                        btn.style.setProperty("--scale", 1);
+                    });
                 });
                 let batchSiteNames = [];
                 let batchOpenConfirm = (e) => {
@@ -8123,9 +9992,10 @@
                     }
                 };
                 if (searchData.prefConfig.shortcut && data.shortcut && !ele.classList.contains("notmatch")) {
-                    let shortcurStr = data.shortcut.replace('Key', '').toUpperCase();
+                    let shortcurStr = data.shortcut.replace('Key', '').replace('Digit', '').toUpperCase();
                     if (shortcurStr.length == 1) ele.dataset.title += ` (${shortcurStr})`;
                     document.addEventListener('keydown', e => {
+                        if (searchData.prefConfig.shortcut == 2 && !currentSite) return;
                         if (e.target.id === "searchJumperInput") return;
                         if ((!data.ctrl == e.ctrlKey) ||
                             (!data.alt == e.altKey) ||
@@ -8143,7 +10013,83 @@
                         }
                     });
                 }
+                let shownSitesNum = 0;
                 let baseSize = this.scale * 40;
+                let taggleHide = (se, show) => {
+                    if (searchData.prefConfig.staticPosition) {
+                        if (show) {
+                            delete se.dataset.disable;
+                        } else {
+                            se.dataset.disable = 'true';
+                        }
+                        return;
+                    }
+                    if (show) {
+                        se.style.display = '';
+                        if (ele.children.length > 2) ele.insertBefore(se, ele.children[2]);
+                    } else {
+                        se.style.display = 'none';
+                        if (self.searchJumperExpand.parentNode == ele) {
+                            ele.insertBefore(se, self.searchJumperExpand);
+                        } else ele.appendChild(se);
+                    }
+                }
+                let typeCheckSites = (keyWords, e) => {
+                    let leftRight = self.con.classList.contains("search-jumper-left") ||
+                        self.con.classList.contains("search-jumper-right");
+                    let targetInput = false;
+                    if (targetElement) {
+                        targetInput = isInput(targetElement);
+                    }
+
+                    let href = targetElement && (targetElement.href || targetElement.src);
+                    shownSitesNum = 0;
+                    siteEles.forEach((se, i) => {
+                        let data = sites[i];
+                        let pass = true;
+                        if (data.kwFilter) {
+                            let checkKw;
+                            if (se.dataset.link) {
+                                checkKw = href || keyWords;
+                            } else {
+                                checkKw = se.dataset.txt ? (keyWords || (targetElement && targetElement.innerText) || "") : (href || keyWords || location.href);
+                            }
+                            pass = self.checkKwFilter(data.kwFilter, checkKw);
+                        }
+                        if (pass && se.dataset.paste) {
+                            pass = targetInput;
+                            taggleHide(se, pass);
+                        } else if (data.kwFilter) {
+                            taggleHide(se, pass);
+                        }
+                        let si = se.querySelector("img");
+                        if (se.style.display != "none") {
+                            shownSitesNum++;
+                        }
+                        if (si && !si.src && si.dataset.src) {
+                            loadIcon(si);
+                        }
+                    });
+                    if (shownSitesNum > (searchData.prefConfig.expandTypeLength || 12) && !searchData.prefConfig.expandType) {
+                        ele.classList.add("not-expand");
+                        ele.appendChild(self.searchJumperExpand);
+                    }
+                    let scrollSize = Math.max(ele.scrollWidth, ele.scrollHeight) + 5 + "px";
+                    if (searchData.prefConfig.disableTypeOpen) {
+                        scrollSize = baseSize + "px";
+                        if (e) self.listPos(ele.children[0], siteList);
+                    }
+                    if (leftRight) {
+                        ele.style.height = scrollSize;
+                        ele.style.width = "";
+                    } else {
+                        ele.style.width = scrollSize;
+                        ele.style.height = "";
+                    }
+                };
+                typeBtn.addEventListener('checkSites', e => {
+                    typeCheckSites(e.detail);
+                }, false);
                 let typeAction = e => {
                     if (e) {
                         if (e.button === 2) {
@@ -8155,117 +10101,28 @@
                     }
                     if (self.funcKeyCall) {
                         self.showAllSites();
-                        /*self.bar.style.display = "none";
-                        setTimeout(() => {
-                            self.bar.style.display = "";
-                            self.initPos(
-                                searchData.prefConfig.position.x,
-                                searchData.prefConfig.position.y,
-                                searchData.prefConfig.offset.x,
-                                searchData.prefConfig.offset.y
-                            );
-                        }, 0);*/
                         return false;
                     }
-                    ele.style.width = "";
-                    ele.style.height = "";
                     let leftRight = self.con.classList.contains("search-jumper-left") ||
                         self.con.classList.contains("search-jumper-right");
                     if (self.preList) {
                         self.preList.style.visibility = "hidden";
                         self.listArrow.style.cssText = "";
                     }
+                    ele.classList.remove('search-jumper-move');
                     if (!ele.classList.contains("search-jumper-open")) {
                         self.recoveHistory();
                         ele.classList.add("search-jumper-open");
                         if (searchData.prefConfig.minSizeMode) {
-                            //self.bar.classList.add("minSizeMode");
                             self.bar.classList.remove("minSizeModeClose");
                         }
-                        let href = targetElement && (targetElement.href || targetElement.src);
+
                         let keyWords = getKeywords();
-                        let shownSitesNum = 0;
-                        siteEles.forEach((se, i) => {
-                            let data = sites[i];
-                            /*if (data.match && data.hideNotMatch) {
-                                if (new RegExp(data.match).test(href)) {
-                                    se.style.display = '';
-                                    if (ele.children.length > 1) ele.insertBefore(se, ele.children[1]);
-                                } else {
-                                    se.style.display = 'none';
-                                    if (self.searchJumperExpand.parentNode == ele) {
-                                        ele.insertBefore(se, self.searchJumperExpand);
-                                    } else ele.appendChild(se);
-                                }
-                            }*/
-                            if (data.kwFilter) {
-                                let checkKw;
-                                if (se.dataset.link) {
-                                    checkKw = href || keyWords;
-                                } else {
-                                    checkKw = se.dataset.txt ? keyWords : (href || keyWords || location.href);
-                                }
-                                let kwRe, fullMatch = data.kwFilter.match(/^\/(.*)\/(\w*)$/);
-                                if (fullMatch) {
-                                    kwRe = new RegExp(fullMatch[1], fullMatch[2]);
-                                } else {
-                                    kwRe = new RegExp(data.kwFilter, "i");
-                                }
-                                if (kwRe.test(checkKw || "")) {
-                                    se.style.display = '';
-                                    if (ele.children.length > 1) ele.insertBefore(se, ele.children[1]);
-                                } else {
-                                    se.style.display = 'none';
-                                    if (self.searchJumperExpand.parentNode == ele) {
-                                        ele.insertBefore(se, self.searchJumperExpand);
-                                    } else ele.appendChild(se);
-                                }
-                            }
-                            if (se.dataset.paste) {
-                                if (targetElement &&
-                                    ((/INPUT|TEXTAREA/i.test(targetElement.nodeName) &&
-                                      targetElement.getAttribute("aria-readonly") != "true"
-                                     ) ||
-                                     targetElement.contentEditable == 'true'
-                                    )
-                                   ) {
-                                    se.style.display = '';
-                                    if (ele.children.length > 1) ele.insertBefore(se, ele.children[1]);
-                                } else {
-                                    se.style.display = 'none';
-                                    if (self.searchJumperExpand.parentNode == ele) {
-                                        ele.insertBefore(se, self.searchJumperExpand);
-                                    } else ele.appendChild(se);
-                                }
-                            }
-                            let si = se.querySelector("img");
-                            if (se.style.display != "none") {
-                                shownSitesNum++;
-                            }
-                            if (si && !si.src && si.dataset.src) {
-                                si.src = si.dataset.src;
-                                delete si.dataset.src;
-                            }
-                        });
-                        if (shownSitesNum > (searchData.prefConfig.expandTypeLength || 12) && !searchData.prefConfig.expandType) {
-                            ele.classList.add("not-expand");
-                            ele.appendChild(self.searchJumperExpand);
-                        }
-                        let scrollSize = Math.max(ele.scrollWidth, ele.scrollHeight) + 5 + "px";
-                        if (searchData.prefConfig.disableTypeOpen) {
-                            scrollSize = baseSize + "px";
-                            if (e) self.listPos(ele.children[0], siteList);
-                        }
-                        if (leftRight) {
-                            ele.style.height = scrollSize;
-                            ele.style.width = "";
-                        } else {
-                            ele.style.width = scrollSize;
-                            ele.style.height = "";
-                        }
+                        typeCheckSites(keyWords, e);
                         setTimeout(() => {
                             if (ele.classList.contains("search-jumper-open")) {
                                 ele.style.flexWrap = "nowrap";
+                                ele.classList.add('search-jumper-move');
                             }
                         }, searchData.prefConfig.typeOpenTime);
                         searchTypes.forEach(type => {
@@ -8278,13 +10135,14 @@
                         });
                     } else {
                         if (searchData.prefConfig.minSizeMode) {
-                            //self.bar.classList.remove("minSizeMode");
                             self.bar.classList.add("minSizeModeClose");
                         }
                         ele.classList.remove("search-jumper-open");
                         if (leftRight) {
                             ele.style.height = baseSize + "px";
+                            ele.style.width = "";
                         } else {
+                            ele.style.height = "";
                             ele.style.width = baseSize + "px";
                         }
                         ele.style.flexWrap = "";
@@ -8295,7 +10153,7 @@
                     if (!searchData.prefConfig.disableTypeOpen) {
                         setTimeout(() => {
                             self.checkScroll();
-                        }, 500);
+                        }, searchData.prefConfig.typeOpenTime);
                     }
                 };
                 let draged = false, initMousePos, initTilePos;
@@ -8310,6 +10168,7 @@
                 let mouseMoveHandler = e => {
                     if (!draged) {
                         self.tips.style.opacity = 0;
+                        self.tips.style.pointerEvents = '';
                         draged = true;
                         initMousePos = {x: e.clientX, y: e.clientY};
                         initTilePos = {x: parseInt(self.bar.style.left), y: parseInt(self.bar.style.top)};
@@ -8318,7 +10177,7 @@
                         self.bar.style.top = initTilePos.y + e.clientY - initMousePos.y + "px";
                     }
                 }
-                typeBtn.onmousedown = function (e) {
+                typeBtn.onmouseup = function (e) {
                     if (e && self.funcKeyCall && e.button === 0 && !(e.shiftKey || e.altKey || e.ctrlKey)) {
                         draged = false;
                         e.preventDefault && e.preventDefault();
@@ -8345,6 +10204,11 @@
                 let viewWidth = window.screen.availWidth || window.innerWidth || document.documentElement.clientWidth;
                 let viewHeight = window.screen.availHeight || window.innerHeight || document.documentElement.clientHeight;
                 let availableSize = !isMobile || (viewWidth > 600 && viewHeight > 600);
+                ele.addEventListener('sitelist', async e => {
+                    ele.appendChild(siteList);
+                    await self.listPos(e.detail.bind, siteList);
+                    siteList.style.display = "block";
+                }, false);
                 typeBtn.addEventListener('mouseenter', e => {
                     if (draged) {
                         return;
@@ -8365,6 +10229,7 @@
                 }, false);
                 typeBtn.addEventListener('mouseleave', e => {
                     self.tips.style.opacity = 0;
+                    self.tips.style.pointerEvents = '';
                     if (searchData.prefConfig.overOpen) {
                         clearTimeout(showTimer);
                     }
@@ -8373,13 +10238,14 @@
                 let tooLoog = sites && sites.length > 200;
                 ele.dataset.id = self.siteIndex;
                 self.stopInput = false;
-                let notMatchSites = [];
                 async function createItem(site, i) {
                     if (!site.name) return;
                     let siteEle = await self.createSiteBtn((tooLoog || searchData.prefConfig.noIcons ? "0" : site.icon), site, openInNewTab, isBookmark, data);
                     if (!siteEle) {
-                        notMatchSites.push(i);
                         return;
+                    }
+                    if (!siteEle.classList.contains("notmatch")) {
+                        shownSitesNum++;
                     }
                     siteEle.dataset.type = type;
                     siteEle.dataset.id = self.siteIndex;
@@ -8402,7 +10268,7 @@
                 try {
                     for (let [i, site] of sites.entries()) {
                         await createItem(site, i);
-                        if (i % 50 === 49) await sleep(1);
+                        if (i % 100 === 99) await sleep(1);
                     }
                 } catch(e) {
                     for (let i = 0; i < sites.length; i++) {
@@ -8439,9 +10305,6 @@
                     if (changed) storage.setItem("sortSiteNames", sortSiteNames);
                 }
 
-
-                sites = sites.filter((s, i) => !notMatchSites.includes(i));
-                notMatchSites = null;
                 siteEles.forEach(siteEle => {
                     if (siteEle.classList.contains("notmatch")) {
                         ele.appendChild(siteEle);
@@ -8456,7 +10319,8 @@
                     }
                     if (!searchData.prefConfig.disableAutoOpen && !searchData.prefConfig.disableTypeOpen) {
                         ele.classList.add("search-jumper-open");
-                        if (sites.length > (searchData.prefConfig.expandTypeLength || 12) && !searchData.prefConfig.expandType) {
+                        ele.classList.add('search-jumper-move');
+                        if (shownSitesNum > (searchData.prefConfig.expandTypeLength || 12) && !searchData.prefConfig.expandType) {
                             ele.classList.add("not-expand");
                             ele.appendChild(self.searchJumperExpand);
                         }
@@ -8469,8 +10333,7 @@
                                     window.removeEventListener('load', loadHandler);
                                     waitIconList.forEach(icon => {
                                         if (icon && !icon.src && icon.dataset.src) {
-                                            icon.src = icon.dataset.src;
-                                            delete icon.dataset.src;
+                                            loadIcon(icon);
                                         }
                                     });
                                     waitIconList = [];
@@ -8484,20 +10347,8 @@
                             let data = sites[i];
 
                             if (data && localKeywords && data.kwFilter) {
-                                let kwRe, fullMatch = data.kwFilter.match(/^\/(.*)\/(\w*)$/);
-                                if (fullMatch) {
-                                    kwRe = new RegExp(fullMatch[1], fullMatch[2]);
-                                } else {
-                                    kwRe = new RegExp(data.kwFilter, "i");
-                                }
-                                if (kwRe.test(localKeywords)) {
-                                    se.style.display = '';
-                                } else {
-                                    se.style.display = 'none';
-                                    if (self.searchJumperExpand.parentNode == ele) {
-                                        ele.insertBefore(se, self.searchJumperExpand);
-                                    } else ele.appendChild(se);
-                                }
+                                let pass = self.checkKwFilter(data.kwFilter, localKeywords);
+                                taggleHide(se, pass);
                             }
                             if (se.style.display != 'none' && si && !si.src && si.dataset.src) {
                                 if (shownIconNum >= 0 && !/^data/.test(si.dataset.src)) {
@@ -8508,8 +10359,7 @@
                                         return;
                                     }
                                 }
-                                si.src = si.dataset.src;
-                                delete si.dataset.src;
+                                loadIcon(si);
                             }
                         });
                     }
@@ -8553,6 +10403,9 @@
             }
 
             async openSiteBtn(siteEle, forceTarget, active = false) {
+                this.lastTips = null;
+                let mouseDownEvent = new CustomEvent("mouseenter");
+                siteEle.dispatchEvent(mouseDownEvent);
                 await this.siteSetUrl(siteEle);
                 let isPage = siteEle.dataset.isPage;
                 if (!forceTarget) forceTarget = "_blank";
@@ -8560,19 +10413,50 @@
                     siteEle.setAttribute("target", forceTarget);
                 }
                 if (isPage && forceTarget == "_blank" && siteEle.href) {
-                    _GM_openInTab(siteEle.href, {active: active});
+                    _GM_openInTab(siteEle.href, {active: active, insert: true});
                 } else {
                     siteEle.click();
                 }
                 siteEle.setAttribute("target", siteEle.dataset.target == 1 ? "_blank" : "_self");
             }
 
-            async batchOpen(siteNames, e) {
+            async openSplitSearch(siteNames) {
+                const query = this.searchJumperInputKeyWords.value || getKeywords() || this.tileInput.value || window.prompt(i18n('keywords'));
+                if (!query || !query.trim()) return;
+                const context = {
+                    pageUrl: location.href, title: document.title, charset: document.characterSet, elements: {},
+                    target: targetElement && {nodeName: targetElement.nodeName, href: targetElement.href, src: targetElement.src,
+                        title: targetElement.title, alt: targetElement.alt, textContent: targetElement.nodeName === 'A' ? targetElement.textContent : ''}
+                };
+                const entries = [];
+                const skipped = [];
+                for (const button of this.getTargetSitesByName(siteNames)) {
+                    if (!button.resolveSplit) { skipped.push(button.dataset.name); continue; }
+                    const request = await button.resolveSplit(query, context);
+                    if (!request) { skipped.push(button.dataset.name); continue; }
+                    entries.push({id: crypto.randomUUID(), name: button.dataset.name, site: button.splitSite,
+                        type: button.splitType, request});
+                }
+                if (!entries.length) throw new Error(i18n('split').noEngines);
+                const response = await extensionApi.runtime.sendMessage({action: 'splitOpen', query, context, entries, skipped, lang});
+                if (!response?.ok) throw new Error(i18n('split')[response?.error] || response?.error || i18n('split').ended);
+            }
+
+            async batchOpen(siteNames, e, newTab) {
+                const targetSites = this.getTargetSitesByName(siteNames);
+                const groupSplit = !isSplitPage && newTab !== true && targetSites.length &&
+                    targetSites.every(button => button.splitType?.openInNewTab === 5);
+                if (splitEnabled && ((e.altKey && e.shiftKey) ||
+                    ((newTab === 5 || groupSplit) && !e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey))) {
+                    try { await this.openSplitSearch(siteNames); }
+                    catch (error) { window.alert(error.message); }
+                    return;
+                }
                 let self = this;
                 self.batchOpening = true;
                 self.customInput = false;
-                if (e.button === 0 && e.altKey && e.shiftKey) {
-                    let targetSites = self.getTargetSitesByName(siteNames);
+                if (e.altKey && e.shiftKey) {
+                    let viewWidth = window.innerWidth || document.documentElement.clientWidth;
                     let html = '<title>SearchJumper Multi</title><style>body{background: black; margin: 0;}iframe{box-sizing: border-box;padding: 5px}</style>';
                     let c = window.open("", "_blank"), i = 1;
                     for (let siteEle of targetSites) {
@@ -8581,7 +10465,7 @@
                             if (self.stopInput) return;
                             if (!siteEle.href) continue;
                             let iframe = document.createElement('iframe');
-                            iframe.width = targetSites.length <= 2 ? '50%' : '33%';
+                            iframe.width = targetSites.length <= 2 || viewWidth <= 1280 ? '50%' : '33%';
                             iframe.height = '100%';
                             iframe.frameBorder = '0';
                             iframe.sandbox = "allow-same-origin allow-scripts allow-popups allow-forms";
@@ -8593,18 +10477,22 @@
                                 url: siteEle.href,
                                 headers: {
                                     referer: siteEle.href,
-                                    origin: siteEle.href
+                                    origin: siteEle.href,
+                                    'User-Agent': navigator.userAgent
                                 },
                                 onload: function(d) {
                                     let curIframe = c.document.querySelector('iframe#' + iframe.id);
                                     let waitReady = () => {
                                         let doc = curIframe.contentDocument || (curIframe.contentWindow && curIframe.contentWindow.document);
                                         if (doc) {
-                                            curIframe.style.display = "";
-                                            curIframe.src = siteEle.href;
-                                            let base = `<base href="${siteEle.href.replace(/[^\/]*$/, "")}">`;
-                                            let docContent = d.response.indexOf("<head>") !== -1 ? d.response.replace("<head>", "<head>" + base) : base + d.response;
-                                            doc.write(docContent);
+                                            try {
+                                                curIframe.style.display = "";
+                                                curIframe.src = siteEle.href;
+                                                let base = `<base href="${siteEle.href.replace(/[^\/]*$/, "")}" />`;
+                                                let docContent = d.response.indexOf("<head") !== -1 ? d.response.replace(/(\<head.*?\>)/, "$1" + base) : base + d.response;
+                                                doc.write(docContent);
+                                            } catch(e) {
+                                            }
                                         } else {
                                             setTimeout(() => {
                                                 waitReady();
@@ -8627,7 +10515,6 @@
                     c.document.write(html);
                     c.document.close();
                 } else if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
-                    let targetSites = self.getTargetSitesByName(siteNames);
                     for (let siteEle of targetSites) {
                         await self.siteSetUrl(siteEle);
                         if (self.stopInput) return;
@@ -8636,8 +10523,11 @@
                             if (targetElement) {
                                 target = {src: targetElement.src || targetElement.href || '', title: targetElement.title || targetElement.alt};
                             }
+                            siteNames = siteNames.filter(n => n !== siteEle.dataset.name);
                             storage.setItem("lastSign", {target: target, sites: siteNames});
-                            _GM_openInTab(siteEle.href, {incognito: true});
+                            setTimeout(() => {
+                                _GM_openInTab(siteEle.href, {incognito: true});
+                            }, 300);
                             setTimeout(() => {
                                 storage.setItem("lastSign", false);
                             }, 2000);
@@ -8645,7 +10535,6 @@
                         }
                     }
                 } else if (e.altKey) {
-                    let targetSites = self.getTargetSitesByName(siteNames);
                     let urls=[];
                     for (let siteEle of targetSites) {
                         if (siteEle.dataset.isPage) {
@@ -8667,7 +10556,6 @@
                         window.open(urls[i] + "#searchJumperMin", "_blank", `width=${_width-10}, height=${_height}, location=0, resizable=1, status=0, toolbar=0, menubar=0, scrollbars=0, left=${left}, top=${top}`);
                     }
                 } else if (e.shiftKey) {
-                    let targetSites = self.getTargetSitesByName(siteNames);
                     for (let siteEle of targetSites) {
                         await self.siteSetUrl(siteEle);
                         if (self.stopInput) return;
@@ -8676,6 +10564,7 @@
                             if (targetElement) {
                                 target = {src: targetElement.src || targetElement.href || '', title: targetElement.title || targetElement.alt};
                             }
+                            siteNames = siteNames.filter(n => n !== siteEle.dataset.name);
                             storage.setItem("lastSign", {target: target, sites: siteNames});
                             window.open(siteEle.href, '_blank');
                             setTimeout(() => {
@@ -8685,22 +10574,21 @@
                         }
                     }
                 } else if (e.ctrlKey || e.metaKey) {
-                    let targetSites = self.getTargetSitesByName(siteNames).reverse();
+                    targetSites.reverse();
                     for (let siteEle of targetSites) {
                         await self.siteSetUrl(siteEle);
                         let isPage = siteEle.dataset.isPage;
                         if (isPage && siteEle.href) {
-                            _GM_openInTab(siteEle.href, {active: false});
+                            _GM_openInTab(siteEle.href, {active: false, insert: true});
                             continue;
                         }
                         if (self.stopInput) return;
                         siteEle.click();
                     }
                 } else if (e.button === 2) {
-                    let targetSites = self.getTargetSitesByName(siteNames);
                     targetSites.reverse().forEach(siteEle => {
                         if (siteEle.dataset.current) return;
-                        self.openSiteBtn(siteEle);
+                        self.openSiteBtn(siteEle, "_blank", !!newTab);
                     });
                 }
                 self.batchOpening = false;
@@ -8718,15 +10606,24 @@
                 });
             }
 
-            getTargetSitesByName(siteNames) {
+            getTargetSitesByName(siteNames, noPointer) {
                 let self = this;
                 let targetSites = [];
                 siteNames.forEach(n => {
                     for (let i = 0; i < self.allSiteBtns.length; i++) {
                         let siteBtn = self.allSiteBtns[i][0];
-                        if (siteBtn.dataset.pointer) continue;
                         if (siteBtn.dataset.name == n) {
-                            targetSites.push(siteBtn);
+                            if (!noPointer && siteBtn.dataset.pointer) {
+                                if (siteBtn.dataset.oriName) {
+                                    let oriBtn = self.getTargetSitesByName([siteBtn.dataset.oriName], true);
+                                    if (oriBtn.length) {
+                                        targetSites.push(...oriBtn);
+                                        break;
+                                    }
+                                }
+                            } else {
+                                targetSites.push(siteBtn);
+                            }
                             break;
                         }
                     }
@@ -8738,17 +10635,17 @@
                 params = params.slice();
                 if (document.readyState !== 'complete' && document.readyState !== 'interactive') {
                     await sleep(300);
-                    this.submitAction(params);
-                    return;
+                    return this.submitAction(params);
                 }
                 let form, input, clicked = false, self = this, inLoop = false, loopTimes = 0, loopArr = [];
                 let opened = false, copyList = [];
-                let copyStore = await storage.getItem("copyStore");
+                let copyStore = splitTaskSignal ? null : await storage.getItem("copyStore");
                 if (copyStore) {
                     copyList = JSON.parse(copyStore);
                 }
 
                 let singleAction = async (param, eleIndex) => {
+                    checkSplitTask();
                     let result = true;
                     if (param[0] === "sleep" || param[0] === "@sleep") {
                         await sleep(param[1]);
@@ -8756,6 +10653,14 @@
                     } else if (param[0] === "@click") {
                         clicked = true;
                         let _r = await emuClick(param[1], eleIndex);
+                        if (!_r) result = false;
+                    } else if (param[0] === "@dblclick") {
+                        clicked = true;
+                        let _r = await emuDblClick(param[1], eleIndex);
+                        if (!_r) result = false;
+                    } else if (param[0] === "@rclick") {
+                        clicked = true;
+                        let _r = await emuRClick(param[1], eleIndex);
                         if (!_r) result = false;
                     } else if (param[1] === 'click' && param[0].indexOf('@') === 0) {
                         clicked = true;
@@ -8770,15 +10675,25 @@
                             }
                         }
                     } else if (param[0] === '@call') {
-                        let func = window[param[1]] || new AsyncFunction('"use strict";' + param[1]);
-                        if (func) await func();
+                        let engine = self.getTargetSitesByName([param[1]])[0];
+                        if (engine) {
+                            extSelectionText = extSelectionText || getKeywords() || cacheKeywords;
+                            await self.siteSetUrl(engine);
+                            engine.click();
+                        } else {
+                            let func = window[param[1]] || new AsyncFunction('"use strict";' + param[1]);
+                            if (func) await func();
+                        }
                     } else if (param[0] === '@open') {
                         let btn = await waitForElement(param[1]);
+                        checkSplitTask();
+                        const signal = splitTaskSignal;
                         if (opened) {
                             _GM_openInTab(btn.href);
                         } else {
                             opened = true;
                             setTimeout(() => {
+                                if (signal?.aborted) return;
                                 location.href = btn.href;
                             }, 50);
                         }
@@ -8797,7 +10712,7 @@
                             if (customInputStr) {
                                 inputStr = customInputStr;
                             } else {
-                                storage.setListItem("inPagePostParams", location.hostname, "");
+                                await storage.setListItem("inPagePostParams", location.hostname, "");
                                 return true;
                             }
                         }
@@ -8836,12 +10751,16 @@
                     if (inPagePostParams) {
                         inPagePostParams.shift();
                         if (inPagePostParams && inPagePostParams.length) {
-                            storage.setListItem("inPagePostParams", location.hostname, inPagePostParams);
-                            storage.setItem("copyStore", JSON.stringify(copyList));
+                            await storage.setListItem("inPagePostParams", location.hostname, inPagePostParams);
+                            if (copyList && copyList.length) {
+                                storage.setItem("copyStore", JSON.stringify(copyList));
+                            }
                         } else {
-                            _GM_setClipboard(copyList.join("\n"));
-                            storage.setListItem("inPagePostParams", location.hostname, "");
+                            await storage.setListItem("inPagePostParams", location.hostname, "");
                             storage.setItem("copyStore", "");
+                            if (copyList && copyList.length) {
+                                _GM_setClipboard(copyList.join("\n"));
+                            }
                         }
                         if (param[0] === '@reload') {
                             location.reload(!!param[1]);
@@ -8864,6 +10783,7 @@
                     }
                 }
 
+                checkSplitTask();
                 if (!clicked && input) {
                     form = input.parentNode;
                     while (form.nodeName.toUpperCase() != 'FORM') {
@@ -8894,16 +10814,47 @@
                 return null;
             }
 
-            async createSiteBtn(icon, data, openInNewTab, isBookmark, typeData) {
+            async switchChinese(target, str) {
+                const windowScatcFunc = target === "sc" ? _unsafeWindow.tc2sc : _unsafeWindow.sc2tc;
+                if (windowScatcFunc) {
+                    return windowScatcFunc(str);
+                }
+                let self = this;
+                if (!self.switchChineseResolve) {
+                    window.addEventListener("message", function(event) {
+                        if (event.data && event.data.type === "switchChineseResult") {
+                            const receivedData = event.data.payload;
+                            self.switchChineseResolve(receivedData);
+                        }
+                    });
+                }
+                return new Promise(resolve => {
+                    self.switchChineseResolve = resolve;
+                    window.postMessage({
+                        type: "switchChineseRequest",
+                        payload: {
+                            target,
+                            str
+                        }
+                    }, "*");
+                    setTimeout(() => {
+                        resolve("");
+                    }, 300);
+                });
+            }
+
+            async createSiteBtn(icon, data, openInNewTab, isBookmark, typeData, isHistoryBtn) {
                 let self = this;
                 let ele = document.createElement("a");
                 ele.setAttribute("ref", "noopener noreferrer");
+                ele.setAttribute("referrerPolicy", "no-referrer");
                 let name = data.name;
                 let urlMatch = data.match;
                 let showTips = false;
                 let tipsData;
                 let pointer = !isBookmark && /^\[/.test(data.url);
                 let description = data.description;
+                let shortcut = data.shortcut;
                 if (typeof data.openInNewTab !== 'undefined') {
                     openInNewTab = data.openInNewTab;
                 }
@@ -8950,14 +10901,14 @@
                         } else {
                             urlRe = new RegExp(urlMatch, "i");
                         }
-                        if (urlRe.test(location.href)) {
+                        if (urlRe.test(href)) {
                             ele.dataset.current = true;
                         }
                     } else if (!pointer && location.hostname && data.url.indexOf(location.hostname) != -1) {
                         if (!this.inSiteMatch) this.inSiteMatch = /site(%3A|:)(.+?)[\s%]/;
                         let match = data.url.match(this.inSiteMatch);
                         if (match) {
-                            if (location.href.indexOf(match[2]) != -1 && data.url.replace(match[0], "").indexOf(location.hostname) != -1) {
+                            if (href.indexOf(match[2]) != -1 && data.url.replace(match[0], "").indexOf(location.hostname) != -1) {
                                 ele.dataset.current = true;
                             }
                         } else {
@@ -8971,7 +10922,7 @@
                                     let urlReg = data.url.match(this.paramMatch);
                                     if (urlReg) {
                                         urlReg = urlReg.join('.*');
-                                        if (new RegExp(urlReg).test(location.href)) {
+                                        if (new RegExp(urlReg).test(href)) {
                                             ele.dataset.current = true;
                                         }
                                     } else {
@@ -8980,7 +10931,7 @@
                                 }
                             } else if (data.url.indexOf("http") === 0 && data.url.indexOf("?") === -1) {
                                 if (!this.keywordMatch) this.keywordMatch = /%[stb][a-z]?\b/g;
-                                if (new RegExp(data.url.replace(/^https?/, "").replace(/[#%]\w+{.*/, "").replace(/\./g, "\\.").replace(this.keywordMatch, ".*")).test(location.href)) {
+                                if (new RegExp(data.url.replace(/^https?/, "").replace(/[#%]\w+{.*/, "").replace(/\./g, "\\.").replace(this.keywordMatch, ".*")).test(href)) {
                                     ele.dataset.current = true;
                                 }
                             }
@@ -9003,12 +10954,15 @@
                 img.style.display = "none";
                 ele.appendChild(img);
 
-                if (searchData.prefConfig.shortcut && data.shortcut && !ele.dataset.clone && !ele.classList.contains("notmatch")) {
+                if (!isHistoryBtn && searchData.prefConfig.shortcut && shortcut && !ele.dataset.clone && !ele.classList.contains("notmatch")) {
                     let shortcutCover = document.createElement("div");
-                    let shortcurStr = data.shortcut.replace('Key', '').toUpperCase();
-                    if (shortcurStr.length == 1) shortcutCover.innerText = shortcurStr;
-                    ele.appendChild(shortcutCover);
-                    document.addEventListener('keydown', e => {
+                    let shortcurStr = shortcut.replace('Key', '').replace('Digit', '').toUpperCase();
+                    if (shortcurStr.length == 1) {
+                        shortcutCover.innerText = shortcurStr;
+                        ele.appendChild(shortcutCover);
+                    }
+                    document.addEventListener('keydown', async e => {
+                        if (searchData.prefConfig.shortcut == 2 && !currentSite) return;
                         if (e.target.id === "searchJumperInput") return;
                         if (!self.hideTimeout) {
                             if ((!data.ctrl == e.ctrlKey) ||
@@ -9018,15 +10972,21 @@
                                 return;
                             }
                         }
+                        if (!self.bar.contains(ele)) return;
                         if (!searchData.prefConfig.enableInInput && !data.ctrl && !data.alt && !data.shift && !data.meta) {
                             if (inputActive(document)) return;
                         }
                         var key = (e.key || String.fromCharCode(e.keyCode)).toLowerCase();
-                        if (data.shortcut == e.code || data.shortcut == key) {
-                            if (action() !== false && !self.customInput) {
+                        if (shortcut == e.code || shortcut == key) {
+                            e.stopPropagation();
+                            if (hoverElement) {
+                                targetElement = hoverElement;
+                            }
+                            if (showTips) {
+                                ele.dispatchEvent(new CustomEvent('showTips'));
+                            } else if (await action() !== false && !self.customInput) {
                                 ele.click();
                             }
-                            e.stopPropagation();
                         }
                     });
                 }
@@ -9050,6 +11010,9 @@
                     let isBase64 = /^data:/.test(imgSrc);
                     if (isBase64) {
                         img.dataset.src = imgSrc;
+                    } else if (ext) {
+                        img.dataset.src = imgSrc;
+                        if (!isBookmark) cachePool.push(img);
                     } else {
                         let cache = searchData.prefConfig.cacheSwitch && cacheIcon[imgSrc];
                         if (cache === 'fail') {
@@ -9057,7 +11020,9 @@
                                 img.dataset.src = imgSrc;
                                 cacheIcon[imgSrc] = '';
                                 if (!isBookmark) {
-                                    cacheAction(img);
+                                    setTimeout(() => {
+                                        cacheAction(img);
+                                    }, 0);
                                 }
                             }
                         } else if (cache) {
@@ -9075,48 +11040,47 @@
                     } else ele.setAttribute("target", "_self");
                 }
                 let dataUrl = data.url;
+                let needSwitchChinese = /%s[st]\b/.test(dataUrl);
                 let hasWordParam = wordParamReg.test(dataUrl);
                 if (hasWordParam) ele.dataset.txt = true;
                 if (/%[tb]\b/i.test(dataUrl)) {
                     ele.dataset.link = true;
                 }
                 let inputString;
-                let getUrl = async (_keyWords) => {
+                let getUrl = async (_keyWords, splitContext) => {
                     self.customInput = false;
+                    dataUrl = data.url;
                     inputString = "";
-                    let keywords = _keyWords || self.searchJumperInputKeyWords.value || getSelectStr();
-                    if (!keywords && !draging && !self.bar.classList.contains("search-jumper-isTargetLink")) {
+                    const isTargetLink = self.bar.classList.contains("search-jumper-isTargetLink");
+                    let keywords = _keyWords || self.searchJumperInputKeyWords.value || getSelectStr() || self.tileInput.value;
+                    if (!keywords && !draging && !isTargetLink) {
                         keywords = getKeywords();
                     }
                     if (keywords && !_keyWords) {
                         if (keywords != cacheKeywords) {
-                            cacheKeywords = keywords;
                             self.keywordIndex = 0;
-                            storage.setItem("cacheKeywords", keywords);
+                            if (isPage) {
+                                cacheKeywords = keywords;
+                                storage.setItem("cacheKeywords", keywords);
+                            }
                         }
                         inputString = keywords;
                     }
                     let postMatch;
-                    if (inPagePost) {
+                    if (inPagePost || /^c(opy)?:|^paste:/.test(dataUrl)) {
                         if (dataUrl.indexOf('%input{') !== -1) {
                             dataUrl = await new Promise(resolve => {
                                 self.showCustomInputWindow(dataUrl, _url => {
                                     resolve(_url);
                                 });
                             });
+                            ele.dataset.url = "";
                         }
                         postMatch = dataUrl.match(/#p{([\s\S]*[^\\])}/);
                     }
-                    let host = location.host;
-                    let href = location.href;
-                    let keyToReg = (key, sign, more) => {
-                        if (!more) {
-                            if (/\w$/.test(key)) {
-                                more = '(\\b|$)';
-                            } else more = '';
-                        }
-                        return new RegExp(key.replace(/([\*\.\?\+\$\^\[\]\(\)\{\}\|\\\/])/g, "\\$1") + more, sign);
-                    }
+                    let href = splitContext?.pageUrl || location.href;
+                    let host = new URL(href).host;
+                    let targetName;
                     let customReplaceSingle = (str, key, value, after) => {
                         if (str.indexOf(key + "[") !== -1) {
                             let multiMatch = str.match(keyToReg(key, "", "\\[(.*?)(\\|(.+))?\\]")), valueArr;
@@ -9153,30 +11117,38 @@
                                 str = str.replace(multiMatch[0], key);
                             }
                         }
-                        if (str.indexOf(key + ".replace(/") !== -1) {
-                            let replaceMatch = str.match(keyToReg(key, "", "\\.replace\\(/(.*?[^\\\\])/(.*?),\s*[\"'](.*?[^\\\\])??[\"']\\)"));
-                            if (!replaceMatch) return str.replace(keyToReg(key, "g"), (after ? after(value) : value));
-                            value = value.replace(new RegExp(replaceMatch[1], replaceMatch[2]), replaceMatch[3] || '');
-                            str = str.replace(replaceMatch[0], key);
-                            return customReplaceSingle(str, key, value, after);
-                        } else {
-                            return str.replace(keyToReg(key, "g"), (after ? after(value.replace(/\$/g, "$$$$")) : value.replace(/\$/g, "$$$$")));
-                        }
+                        return replaceSingle(str, key, value, after);
                     };
                     let needDecode = (!/^showTips:h/i.test(dataUrl) && /^c(opy)?:|[#:%]P{|^javascript:|^showTips:/i.test(dataUrl));
                     let keywordsU = "", keywordsL = "", keywordsR = "", keywordsSC = "", keywordsTC = "";
                     let customReplaceKeywords = str => {
                         let _str = str;
+                        _str = customReplaceSingle(_str, "%n", targetName);
                         _str = customReplaceSingle(_str, "%su", keywordsU);
                         _str = customReplaceSingle(_str, "%sl", keywordsL);
-                        _str = customReplaceSingle(_str, "%sr", keywordsR);
+                        _str = customReplaceSingle(_str, "%sr", showTips ? keywordsR.replace(/\n/g, "【SearchJumperBreak】") : keywordsR);
+                        _str = customReplaceSingle(_str, "%S", cacheKeywords || keywordsR);
                         _str = customReplaceSingle(_str, "%ss", keywordsSC);
                         _str = customReplaceSingle(_str, "%st", keywordsTC);
                         _str = customReplaceSingle(_str, "%se", escape ? escape(keywordsR) : keywordsR);
-                        if (_str == str) {
-                            _str = customReplaceSingle(_str, "%s", keywordsR, v => {
-                                return (needDecode ? v : encodeURIComponent(v));
-                            });
+                        _str = customReplaceSingle(_str, "%s", keywordsR, v => {
+                            return (needDecode ? v : encodeURIComponent(v));
+                        });
+                        if (/%bd\b/.test(_str)) {
+                            try {
+                                let debase64 = atob(keywordsR);
+                                _str = customReplaceSingle(_str, "%bd", debase64);
+                            } catch(e) {
+                                console.log("No standard base64");
+                            }
+                        }
+                        if (/%be\b/.test(_str)) {
+                            try {
+                                let enbase64 = btoa(keywordsR);
+                                _str = customReplaceSingle(_str, "%be", enbase64);
+                            } catch(e) {
+                                console.log(e);
+                            }
                         }
                         return _str;
                     };
@@ -9191,9 +11163,16 @@
                             if (!selector) {
                                 try {
                                     let selectEles = window.getSelection();
+                                    let pickerElements = picker.getElements();
                                     let container = document.createElement('div');
-                                    for (let i = 0, len = selectEles.rangeCount; i < len; ++i) {
-                                        container.appendChild(selectEles.getRangeAt(i).cloneContents());
+                                    if (pickerElements) {
+                                        pickerElements.forEach(ele => {
+                                            container.appendChild(ele.cloneNode(true));
+                                        });
+                                    } else {
+                                        for (let i = 0, len = selectEles.rangeCount; i < len; ++i) {
+                                            container.appendChild(selectEles.getRangeAt(i).cloneContents());
+                                        }
                                     }
                                     [].forEach.call(container.querySelectorAll("style,script,svg,canvas"), ele => {
                                         let textNode = document.createTextNode('');
@@ -9227,7 +11206,7 @@
                                                 newNode = document.createTextNode(innerText);
                                             } else {
                                                 newNode = document.createElement("pre");
-                                                newNode.innerHTML = createHTML(innerText);
+                                                setHTML(newNode, innerText);
                                             }
                                             a.parentNode.replaceChild(newNode, a);
                                         });
@@ -9250,7 +11229,11 @@
                                     }
                                 }
                             }
-                            str = customReplaceSingle(str, customMatch[0], value);
+                            if (splitContext) {
+                                if (isSplitPage) value = splitContext.elements[customMatch[0]] || '';
+                                else splitContext.elements[customMatch[0]] = value;
+                            }
+                            str = customReplaceSingle(str, customMatch[0], needDecode ? value : encodeURIComponent(value));
                             customMatch = str.match(/%element{(.*?)}(\.prop\((.*?)\))?/);
                         }
                         customMatch = str.match(/%date({(.*?)})?/);
@@ -9296,10 +11279,10 @@
                         if (inPagePost) {
                             tempUrl = tempUrl.replace(postMatch[0], "");
                         }
-                        ele.dataset.url = tempUrl.replace(/%e\b/g, document.characterSet).replace(/%c\b/g, (isMobile?"mobile":"pc")).replace(/%h\b/g, host);
+                        ele.dataset.url = tempUrl.replace(/%e\b/g, splitContext?.charset || document.characterSet).replace(/%c\b/g, (isMobile?"mobile":"pc"));
                     }
                     let targetUrl = '', targetLink = '';
-                    let targetName = inputString || document.title;
+                    targetName = inputString || splitContext?.title || document.title;
                     let imgBase64 = '', resultUrl = customVariable(ele.dataset.url);
                     if (targetElement && targetElement.nodeName) {
                         targetUrl = targetElement.href || (targetElement.parentNode && targetElement.parentNode.href) || '';
@@ -9314,12 +11297,13 @@
                             }
                             if (targetUrl) targetUrl = targetUrl.replace(/^blob:/, "");
                         }
-                        targetName = targetElement.title || targetElement.alt || document.title;
+                        targetName = targetElement.title || targetElement.alt || splitContext?.title || document.title;
                         if (targetElement.nodeName.toUpperCase() == 'IMG' && /%i\b/.test(dataUrl)) {
                             if (targetElement.src) {
                                 if (/^data/.test(targetElement.src)) {
                                     imgBase64 = targetElement.src;
                                 } else {
+                                    self.tipsPos(ele, "<span class='loader'></span><font>Loading...</font>");
                                     imgBase64 = await image2Base64(targetElement);
                                 }
                                 resultUrl = resultUrl.replace(/%i\b/g, imgBase64);
@@ -9335,6 +11319,7 @@
                         if (!searchData.prefConfig.templateData) searchData.prefConfig.templateData = {};
                         let templateResult = searchData.prefConfig.templateData[templateName];
                         if (!templateResult) {
+                            if (self.stopInput) return false;
                             templateResult = window.prompt(i18n("template", templateName)) || "";
                             if (templateResult) {
                                 searchData.prefConfig.templateData[templateName] = templateResult;
@@ -9364,7 +11349,14 @@
                             resultUrl = resultUrl.replace(inputMatch[0], promptStr);
                         } else break;
                     }
+                    if (targetUrl) {
+                        targetUrl = targetUrl.replace(/%(\w{2})/g, (match, letter) => `%${letter.toUpperCase()}`);
+                    }
+                    if (targetLink) {
+                        targetLink = targetLink.replace(/%(\w{2})/g, (match, letter) => `%${letter.toUpperCase()}`);
+                    }
                     let targetBaseUrl = targetUrl.replace(/^https?:\/\//i, "");
+                    if (!keywords && isTargetLink) keywords = targetUrl;
                     if (!keywords) keywords = (currentSite && cacheKeywords);
                     try {
                         if (typeof navigator.clipboard.readText !== "undefined") {
@@ -9398,6 +11390,7 @@
                                     self.customInput = true;
                                     let src = window.prompt(i18n("targetUrl"), "https://www.google.com/favicon.ico");
                                     if (src) {
+                                        self.tipsPos(ele, "<span class='loader'></span><font>Loading...</font>");
                                         imgBase64 = await imageSrc2Base64(src);
                                     } else return false;
                                 }
@@ -9419,22 +11412,27 @@
                         keywordsR = keywords;
                         keywordsU = keywordsR.toUpperCase();
                         keywordsL = keywordsR.toLowerCase();
-                        keywordsSC = _unsafeWindow.tc2sc ? _unsafeWindow.tc2sc(keywordsR) : keywordsR;
-                        keywordsTC = _unsafeWindow.sc2tc ? _unsafeWindow.sc2tc(keywordsR) : keywordsR;
+                        if (needSwitchChinese) {
+                            keywordsSC = await self.switchChinese("sc", keywordsR);
+                            keywordsTC = await self.switchChinese("tc", keywordsR);
+                        }
                         if (!needDecode) keywords = encodeURIComponent(keywords);
                         resultUrl = customReplaceKeywords(resultUrl);
                     } else if (keywords && (!keywordsU && !keywordsL && !keywordsR)) {
                         keywordsR = keywords;
                         keywordsU = keywordsR.toUpperCase();
                         keywordsL = keywordsR.toLowerCase();
-                        keywordsSC = _unsafeWindow.tc2sc ? _unsafeWindow.tc2sc(keywordsR) : keywordsR;
-                        keywordsTC = _unsafeWindow.sc2tc ? _unsafeWindow.sc2tc(keywordsR) : keywordsR;
+                        if (needSwitchChinese) {
+                            keywordsSC = await self.switchChinese("sc", keywordsR);
+                            keywordsTC = await self.switchChinese("tc", keywordsR);
+                        }
                         if (!needDecode) keywords = encodeURIComponent(keywords);
                     }
                     if (targetUrl === '') {
-                        let canBeUrl = getSelectStr() || self.searchJumperInputKeyWords.value;
-                        if (!hasWordParam && canBeUrl && /^(http|ftp)/i.test(canBeUrl)) {
+                        let canBeUrl = getSelectStr() || self.searchJumperInputKeyWords.value || self.tileInput.value;
+                        if (!hasWordParam && canBeUrl && /^\w{1,8}:/i.test(canBeUrl)) {
                             targetUrl = canBeUrl;
+                            targetUrl = targetUrl.replace(/%(\w{2})/g, (match, letter) => `%${letter.toUpperCase()}`);
                         } else {
                             let promptStr = false;
                             let getTargetUrl = () => {
@@ -9442,6 +11440,7 @@
                                 if (promptStr === false) {
                                     promptStr = window.prompt(i18n("targetUrl"), "https://www.google.com/favicon.ico");
                                     if (promptStr) {
+                                        promptStr = promptStr.replace(/%(\w{2})/g, (match, letter) => `%${letter.toUpperCase()}`);
                                         targetElement = {src: promptStr};
                                     }
                                 }
@@ -9458,10 +11457,10 @@
                                 if (getTargetUrl() === false) return false;
                                 resultUrl = resultUrl.replace(/%T\b/g, encodeURIComponent(promptStr));
                             }
-                            if (/%TT\b/.test(resultUrl)) {
+                            if (/%τ\b/.test(resultUrl)) {
                                 self.customInput = true;
                                 if (getTargetUrl() === false) return false;
-                                resultUrl = resultUrl.replace(/%TT\b/g, encodeURIComponent(encodeURIComponent(promptStr)));
+                                resultUrl = resultUrl.replace(/%τ\b/g, encodeURIComponent(encodeURIComponent(promptStr)));
                             }
                             if (/%b\b/.test(resultUrl)) {
                                 self.customInput = true;
@@ -9473,18 +11472,20 @@
                                 if (getTargetUrl() === false) return false;
                                 resultUrl = resultUrl.replace(/%B\b/g, encodeURIComponent(promptStr.replace(/^https?:\/\//i, "")));
                             }
-                            if (/%BB\b/.test(resultUrl)) {
+                            if (/%β\b/.test(resultUrl)) {
                                 self.customInput = true;
                                 if (getTargetUrl() === false) return false;
-                                resultUrl = resultUrl.replace(/%BB\b/g, encodeURIComponent(encodeURIComponent(promptStr.replace(/^https?:\/\//i, ""))));
+                                resultUrl = resultUrl.replace(/%β\b/g, encodeURIComponent(encodeURIComponent(promptStr.replace(/^https?:\/\//i, ""))));
                             }
                         }
                     }
+                    let _host = host;
                     if ((targetLink || targetUrl) && !ele.dataset.link) {
                         href = targetLink || targetUrl;
+                        _host = href.replace(/^\w+:\/\/([^\/]+).*/, "$1");
                     }
                     if (inPagePost) {
-                        let postParams = [];
+                        let postParams = [], hasCall = false;
                         postMatch[1].replace(/([^\\])&/g, "$1SJ^PARAM").split("SJ^PARAM").forEach(pair => {//ios不支持零宽断言，哭唧唧
                             pair = pair.trim();
                             if (/^loopStart\(\d+\)$/.test(pair)) {
@@ -9497,6 +11498,16 @@
                                 if (click) {
                                     postParams.push(['@click', click.replace(/\\([\=&])/g, "$1").trim()]);
                                 }
+                            } else if (pair.startsWith("dblclick(") && pair.endsWith(')')) {
+                                let click = pair.slice(9, pair.length - 1);
+                                if (click) {
+                                    postParams.push(['@dblclick', click.replace(/\\([\=&])/g, "$1").trim()]);
+                                }
+                            } else if (pair.startsWith("rclick(") && pair.endsWith(')')) {
+                                let click = pair.slice(7, pair.length - 1);
+                                if (click) {
+                                    postParams.push(['@rclick', click.replace(/\\([\=&])/g, "$1").trim()]);
+                                }
                             } else if (pair.startsWith("copy(") && pair.endsWith(')')) {
                                 let copy = pair.slice(5, pair.length - 1);
                                 if (copy) {
@@ -9506,15 +11517,14 @@
                                 let func = pair.slice(5, pair.length - 1);
                                 if (func) {
                                     postParams.push(['@call', func.replace(/\\([\=&])/g, "$1").trim()]);
+                                    hasCall = true;
                                 }
                             } else if (pair.startsWith("reload(") && pair.endsWith(')')) {
                                 let func = pair.slice(7, pair.length - 1);
                                 postParams.push(['@reload', func.trim()]);
                             } else if (pair.startsWith("wait(") && pair.endsWith(')')) {
                                 let wait = pair.slice(5, pair.length - 1);
-                                if (wait) {
-                                    postParams.push(['@wait', wait.replace(/\\([\=&])/g, "$1").trim()]);
-                                }
+                                postParams.push(['@wait', wait.replace(/\\([\=&])/g, "$1").trim()]);
                             } else if (pair.startsWith("open(") && pair.endsWith(')')) {
                                 let open = pair.slice(5, pair.length - 1);
                                 if (open) {
@@ -9530,7 +11540,7 @@
                                 let pairArr = pair.split("SJ^PARAM");
                                 if (pairArr.length === 2) {
                                     let k = pairArr[0];
-                                    let v = customReplaceKeywords(pairArr[1].replace(/\\([\=&])/g, "$1").replace(/%e\b/g, document.characterSet).replace(/%i\b/g, imgBase64).replace(/%c\b/g, (isMobile?"mobile":"pc")).replace(/%U\b/g, encodeURIComponent(href)).replace(/%UU\b/g, encodeURIComponent(encodeURIComponent(href))).replace(/%h\b/g, host).replace(/%T\b/g, encodeURIComponent(targetUrl)).replace(/%TT\b/g, encodeURIComponent(encodeURIComponent(targetUrl))).replace(/%b\b/g, targetBaseUrl).replace(/%B\b/g, encodeURIComponent(targetBaseUrl)).replace(/%BB\b/g, encodeURIComponent(encodeURIComponent(targetBaseUrl))).replace(/%n\b/g, targetName).replace(/%S\b/g, (cacheKeywords || keywords)));
+                                    let v = customReplaceKeywords(pairArr[1].replace(/\\([\=&])/g, "$1").replace(/%e\b/g, document.characterSet).replace(/%i\b/g, imgBase64).replace(/%c\b/g, (isMobile?"mobile":"pc")).replace(/%U\b/g, encodeURIComponent(href)).replace(/%υ\b/g, encodeURIComponent(encodeURIComponent(href))).replace(/%h\b/g, _host).replace(/%T\b/g, encodeURIComponent(targetUrl)).replace(/%τ\b/g, encodeURIComponent(encodeURIComponent(targetUrl))).replace(/%b\b/g, targetBaseUrl).replace(/%B\b/g, encodeURIComponent(targetBaseUrl)).replace(/%β\b/g, encodeURIComponent(encodeURIComponent(targetBaseUrl))));
                                     v = customReplaceSingle(v, "%t", targetUrl);
                                     v = customReplaceSingle(v, "%u", href);
                                     postParams.push([k, v]);
@@ -9539,17 +11549,29 @@
                                 }
                             }
                         });
-                        if (resultUrl === "" || resultUrl === location.href) {
+                        if (hasCall) {
+                            self.updateCacheKeywords();
+                        }
+                        if (splitContext) {
+                            splitContext.request.actions = postParams;
+                            if (!resultUrl) resultUrl = splitContext.pageUrl;
+                        } else if (resultUrl === "" || resultUrl === location.href) {
                             inPagePostParams = postParams;
-                            this.submitAction(postParams);
+                            this.submitAction(postParams).catch(error => window.alert(error.message));
                             return false;
                         } else {
-                            storage.setListItem("inPagePostParams", resultUrl.replace(/^https?:\/\/([^\/:]+).*/, "$1"), postParams);
+                            try {
+                                await storage.setListItem("inPagePostParams", new URL(resultUrl, location.href).hostname, postParams);
+                            } catch (error) {
+                                window.alert(error.message);
+                                return false;
+                            }
                         }
                     }
-                    resultUrl = customReplaceKeywords(resultUrl.replace(/%U\b/g, encodeURIComponent(href)).replace(/%UU\b/g, encodeURIComponent(encodeURIComponent(href))).replace(/%T\b/g, encodeURIComponent(targetUrl)).replace(/%TT\b/g, encodeURIComponent(encodeURIComponent(targetUrl))).replace(/%b\b/g, targetBaseUrl).replace(/%B\b/g, encodeURIComponent(targetBaseUrl)).replace(/%BB\b/g, encodeURIComponent(encodeURIComponent(targetBaseUrl))).replace(/%n\b/g, targetName).replace(/%S\b/g, (cacheKeywords || keywords)));
+                    resultUrl = customReplaceSingle(resultUrl, "%h", _host);
                     resultUrl = customReplaceSingle(resultUrl, "%t", targetUrl);
                     resultUrl = customReplaceSingle(resultUrl, "%u", href);
+                    resultUrl = customReplaceKeywords(resultUrl.replace(/%U\b/g, encodeURIComponent(href)).replace(/%υ\b/g, encodeURIComponent(encodeURIComponent(href))).replace(/%T\b/g, encodeURIComponent(targetUrl)).replace(/%τ\b/g, encodeURIComponent(encodeURIComponent(targetUrl))).replace(/%b\b/g, targetBaseUrl).replace(/%B\b/g, encodeURIComponent(targetBaseUrl)).replace(/%β\b/g, encodeURIComponent(encodeURIComponent(targetBaseUrl))));
                     if (openInNewTab && /^(https?|ftp):/.test(resultUrl)) {
                         ele.setAttribute("target", "_blank");
                         ele.dataset.target = 1;
@@ -9558,11 +11580,36 @@
                     }
                     return resultUrl;
                 };
+                if (splitEnabled) ele.splitType = {...typeData, sites: undefined};
+                if (splitEnabled && /^(https?:|#p\{)/i.test(data.url) && !/[:%]P\{/.test(data.url)) {
+                    ele.splitSite = {...data};
+                    ele.resolveSplit = async (query, context) => {
+                        const request = {};
+                        const savedTarget = targetElement;
+                        if (isSplitPage) targetElement = context.target || getBody(document);
+                        delete ele.dataset.url;
+                        let url;
+                        try { url = await getUrl(query, {...context, request}); }
+                        finally { targetElement = savedTarget; }
+                        if (!url) return null;
+                        url = url.trim();
+                        const targetUrl = url.replace(/[:%]p\{[\s\S]*?\}/, '').replace(/#(j(umpFrom|f)?|from)\{.*?\}/, '');
+                        if (!/^https?:\/\//i.test(targetUrl)) return null;
+                        request.url = targetUrl;
+                        request.kind = request.actions ? 'automation' :
+                            (/[:%]p\{/.test(url) || (data.charset && data.charset.toLowerCase() !== 'utf-8')) ? 'form' : 'get';
+                        if (request.kind === 'form') {
+                            request.formUrl = url;
+                            request.charset = data.charset || 'utf-8';
+                        }
+                        return request;
+                    };
+                }
                 let targetUrlData;
                 let clicked = false;
                 let alt, ctrl, meta, shift;
                 let action = async e => {
-                    if (e.stopPropagation) e.stopPropagation();
+                    if (ele.dataset.disable) return;
                     delete ele.href;
                     if (!e) e = {};
                     alt = e.altKey;
@@ -9570,7 +11617,12 @@
                     meta = e.metaKey;
                     shift = e.shiftKey;
                     if (!alt && !ctrl && !meta && !shift) {
-                        if (openInNewTab === 2) {//隱身窗口
+                        if (e.button == 1 || e.button == 2) {
+                            alt = false;
+                            ctrl = true;
+                            meta = false;
+                            shift = false;
+                        } else if (openInNewTab === 2) {//隱身窗口
                             alt = false;
                             ctrl = true;
                             meta = false;
@@ -9605,11 +11657,15 @@
                                 _GM_setClipboard(tipsData);
                             }
                         }
+                        ele.dispatchEvent(new Event("actionOver"));
                         return;
                     }
                     clicked = false;
                     targetUrlData = "";
                     targetUrlData = await getUrl();
+                    if (/^(https?|ftp):/.test(targetUrlData)) {
+                        e.stopPropagation && e.stopPropagation();
+                    }
                     if (/^c(opy)?:|^paste:/.test(data.url) || /^javascript:/.test(data.url) || /^\[/.test(data.url) || /[:%]P{/.test(data.url) || (data.charset && data.charset != 'utf-8') || /[:%]p{/.test(data.url)) {
                         if (e.button == 1 || e.button == 2) {
                             clicked = true;
@@ -9623,6 +11679,7 @@
                                     self.stopInput = false;
                                 }, 1);
                             }
+                            ele.dispatchEvent(new Event("actionOver"));
                             return;
                         }
                         ele.href = targetUrlData;
@@ -9632,78 +11689,109 @@
                     }
                     ele.dispatchEvent(new Event("actionOver"));
                     if (clicked) {
+                        if (e.preventDefault) e.preventDefault();
                         ele.click();
                     }
                 };
-                let clickHandler = e => {
-                    if (self.waitForShowTips) {
-                        showTipsHandler(ele, 0);
-                        if (e) {
-                            e.preventDefault();
-                            e.stopPropagation();
+                let addHistory = () => {
+                    let historyLength = Math.max(searchData.prefConfig.historyLength, 20);
+                    let isCurrent = ele.dataset.current;
+                    if (!data.hideNotMatch && !data.kwFilter && !ele.dataset.clone && !ele.dataset.paste && urlMatch !== '0' && historyLength && !isCurrent) {
+                        storage.getItem("historySites", data => {
+                            historySites = (data || []);
+                            historySites = historySites.filter(site => {return site && site != name});
+                            historySites.unshift(name);
+                            if (historySites.length > historyLength) {
+                                historySites = historySites.slice(0, historyLength);
+                            }
+                            storage.setItem("historySites", historySites);
+                            //self.initHistorySites();
+                        });
+                    }
+                    if (searchData.prefConfig.shiftLastUsedType && !isCurrent) {
+                        let parent = ele.parentNode;
+                        let dismissHistory = parent && (parent.classList.contains("search-jumper-targetAll") ||
+                                                        parent.classList.contains("search-jumper-targetImg") ||
+                                                        parent.classList.contains("search-jumper-targetAudio") ||
+                                                        parent.classList.contains("search-jumper-targetVideo") ||
+                                                        parent.classList.contains("search-jumper-targetLink") ||
+                                                        parent.classList.contains("search-jumper-targetPage") ||
+                                                        parent.classList.contains("search-jumper-needInPage"));
+                        if (!dismissHistory && historyType != ele.dataset.type) {
+                            historyType = ele.dataset.type;
+                            storage.setItem("historyType", historyType);
                         }
+                    }
+                    if (searchData.prefConfig.sortType) {
+                        storage.getItem("sortTypeNames", data => {
+                            sortTypeNames = (data || {});
+                            if (!sortTypeNames[ele.dataset.type]) {
+                                sortTypeNames[ele.dataset.type] = 1;
+                            } else {
+                                sortTypeNames[ele.dataset.type] = sortTypeNames[ele.dataset.type] + 1;
+                            }
+                            storage.setItem("sortTypeNames", sortTypeNames);
+                        });
+                    }
+                    if (searchData.prefConfig.sortSite) {
+                        storage.getItem("sortSiteNames", data => {
+                            sortSiteNames = (data || {});
+                            if (!sortSiteNames[ele.dataset.name]) {
+                                sortSiteNames[ele.dataset.name] = 1;
+                            } else {
+                                sortSiteNames[ele.dataset.name] = sortSiteNames[ele.dataset.name] + 1;
+                            }
+                            storage.setItem("sortSiteNames", sortSiteNames);
+                        });
+                    }
+                };
+                let copyHandler = (inner, str) => {
+                    _GM_setClipboard(str);
+                    let target = ele;
+                    if (!inner) {
+                        self.appendBar();
+                        self.closeOpenType();
+                        self.con.style.display = "";
+                        self.setFuncKeyCall(true);
+                        if (window.getSelection().toString()) {
+                            target = targetElement || ele;
+                        } else target = getBody(document);
+                        self.tileInput.parentNode && self.tileInput.parentNode.removeChild(self.tileInput);
+                    }
+                    self.tipsPos(target, i18n('copyOver'));
+                    clearTimeout(self.hideTips);
+                    self.hideTips = setTimeout(() => {
+                        if (self.tips.style.opacity == "1") {
+                            self.tips.style.opacity = 0;
+                            self.tips.style.pointerEvents = '';
+                        }
+                    }, 1500);
+                };
+                let clickHandler = e => {
+                    e && e.stopPropagation && e.stopPropagation();
+                    if (ele.dataset.disable) return;
+                    if (targetElement) {
+                        targetElement.focus && targetElement.focus();
+                    }
+                    if (showTips && self.waitForShowTips) {
+                        showTipsHandler(ele, 0);
+                        e && e.preventDefault && e.preventDefault();
                         return false;
                     }
                     clicked = true;
                     if (!targetUrlData) {
-                        if (e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                        }
+                        e && e.preventDefault && e.preventDefault();
                         return false;
                     }
                     if (!e) e = {};
                     let isPage = /^(https?|ftp):/.test(targetUrlData);
                     if (!self.batchOpening && !isBookmark) {
-                        let historyLength = Math.max(searchData.prefConfig.historyLength, 20);
-                        let isCurrent = ele.dataset.current;
-                        if (!data.hideNotMatch && !data.kwFilter && !showTips && !ele.dataset.clone && !ele.dataset.paste && urlMatch !== '0' && historyLength && !isCurrent) {
-                            storage.getItem("historySites", data => {
-                                historySites = (data || []);
-                                historySites = historySites.filter(site => {return site && site != name});
-                                historySites.unshift(name);
-                                if (historySites.length > historyLength) {
-                                    historySites = historySites.slice(0, historyLength);
-                                }
-                                storage.setItem("historySites", historySites);
-                                //self.initHistorySites();
-                            });
-                        }
-                        if (searchData.prefConfig.shiftLastUsedType && !isCurrent) {
-                            let parent = ele.parentNode;
-                            let dismissHistory = parent && (parent.classList.contains("search-jumper-targetAll") ||
-                                                            parent.classList.contains("search-jumper-targetImg") ||
-                                                            parent.classList.contains("search-jumper-targetAudio") ||
-                                                            parent.classList.contains("search-jumper-targetVideo") ||
-                                                            parent.classList.contains("search-jumper-targetLink") ||
-                                                            parent.classList.contains("search-jumper-targetPage"));
-                            if (!dismissHistory && historyType != ele.dataset.type) {
-                                historyType = ele.dataset.type;
-                                storage.setItem("historyType", historyType);
-                            }
-                        }
-                        if (searchData.prefConfig.sortType) {
-                            storage.getItem("sortTypeNames", data => {
-                                sortTypeNames = (data || {});
-                                if (!sortTypeNames[ele.dataset.type]) {
-                                    sortTypeNames[ele.dataset.type] = 1;
-                                } else {
-                                    sortTypeNames[ele.dataset.type] = sortTypeNames[ele.dataset.type] + 1;
-                                }
-                                storage.setItem("sortTypeNames", sortTypeNames);
-                            });
-                        }
-                        if (searchData.prefConfig.sortSite) {
-                            storage.getItem("sortSiteNames", data => {
-                                sortSiteNames = (data || {});
-                                if (!sortSiteNames[ele.dataset.name]) {
-                                    sortSiteNames[ele.dataset.name] = 1;
-                                } else {
-                                    sortSiteNames[ele.dataset.name] = sortSiteNames[ele.dataset.name] + 1;
-                                }
-                                storage.setItem("sortSiteNames", sortSiteNames);
-                            });
-                        }
+                        addHistory();
+                    }
+                    if (splitEnabled && !isSplitPage && openInNewTab === 5 && ele.resolveSplit && !alt && !ctrl && !meta && !shift) {
+                        e.preventDefault && e.preventDefault();
+                        self.openSplitSearch([data.name]).catch(error => window.alert(error.message));
+                        return false;
                     }
                     if (searchData.prefConfig.multiline == 1 || searchData.prefConfig.multiline == 2) {
                         if (inputString &&
@@ -9764,7 +11852,7 @@
                                     } else {
                                         self.searchJumperInPageInput.value = _url;
                                         self.submitInPageWords();
-                                        self.waitForHide(1);
+                                        self.waitForHide(0);
                                     }
                                 });
                             } else {
@@ -9773,7 +11861,7 @@
                                 } else {
                                     self.searchJumperInPageInput.value = findWords;
                                     self.submitInPageWords();
-                                    self.waitForHide(1);
+                                    self.waitForHide(0);
                                 }
                             }
                         }
@@ -9810,40 +11898,30 @@
                             return false;
                         } else if (targetUrlData.indexOf('%input{') !== -1) {
                             self.showCustomInputWindow(targetUrlData, _url => {
-                                _GM_setClipboard(_url.replace(/^c(opy)?:/, ""));
-                                //_GM_notification('Copied successfully!');
+                                copyHandler(true, _url.replace(/^c(opy)?:/, ""));
                             });
                         } else {
-                            _GM_setClipboard(targetUrlData.replace(/^c(opy)?:/, ""));
-                            //_GM_notification('Copied successfully!');
+                            copyHandler(e.isTrusted, targetUrlData.replace(/^c(opy)?:/, ""));
                         }
                         return false;
                     } else if (/^paste:/.test(data.url)) {
-                        function triggerPaste(element, value) {
-                            targetElement.focus();
-                            if (typeof element.value !== "undefined") {
-                                const startPos = element.selectionStart;
-                                const endPos = element.selectionEnd;
-                                let newValue = element.value.substring(0, startPos) + value + element.value.substring(endPos, element.value.length);
-                                startInput(element, newValue);
-                                element.selectionStart = startPos + value.length;
-                                element.selectionEnd = startPos + value.length;
-                            } else {
-                                const selection = window.getSelection();
-                                const range = selection.getRangeAt(0);
-                                range.deleteContents();
-                                range.insertNode(document.createTextNode(value));
-                                selection.removeAllRanges();
-                                selection.addRange(range);
+                        let targetInput = false;
+                        if (targetElement &&
+                            (/INPUT|TEXTAREA/i.test(targetElement.nodeName) &&
+                             targetElement.getAttribute("aria-readonly") != "true")
+                           ) {
+                            targetInput = true;
+                        } else {
+                            let parent = targetElement;
+                            while (parent) {
+                                targetInput = parent.contentEditable == 'true';
+                                if (targetInput || parent.nodeName.toUpperCase() == 'BODY') {
+                                    break;
+                                }
+                                parent = parent.parentNode;
                             }
                         }
-                        if (targetElement &&
-                            ((/INPUT|TEXTAREA/i.test(targetElement.nodeName) &&
-                              targetElement.getAttribute("aria-readonly") != "true"
-                             ) ||
-                             targetElement.contentEditable == 'true'
-                            )
-                           ) {
+                        if (targetInput) {
                             if (!targetUrlData) {
                                 return false;
                             }
@@ -9864,7 +11942,7 @@
                         if (e.preventDefault) e.preventDefault();
                         if (e.stopPropagation) e.stopPropagation();
                         let siteNames = JSON.parse(data.url);
-                        self.batchOpen(siteNames, {button: 2, altKey: alt || e.altKey, ctrlKey: ctrl || e.ctrlKey, shiftKey: shift || e.shiftKey, metaKey: meta || e.metaKey});
+                        self.batchOpen(siteNames, {button: 2, altKey: alt || e.altKey, ctrlKey: ctrl || e.ctrlKey, shiftKey: shift || e.shiftKey, metaKey: meta || e.metaKey}, openInNewTab === 5 ? 5 : openInNewTab === 1);
                         return false;
                     } else if (/[:%]P{/.test(data.url)) {
                         if (e.preventDefault) e.preventDefault();
@@ -9912,24 +11990,38 @@
                         if (targetUrlData === false) return false;
                         let jumpFrom = data.url.match(/#(j(umpFrom|f)?|from){(.*?)}/);
                         let processPostUrl = _url => {
-                            storage.setItem("postUrl", [_url, data.charset]);
                             if (jumpFrom) {
                                 jumpFrom = jumpFrom[3];
-                                if (jumpFrom.indexOf("http") !== 0) {
-                                    jumpFrom = _url.replace(/(:\/\/.*?\/)[\s\S]*/, "$1" + jumpFrom);
+                                if (jumpFrom === '') {
+                                    submitByForm(data.charset, _url, '_self');
+                                    return '';
+                                } else {
+                                    storage.setItem("postUrl", [_url, data.charset]);
+                                    if (jumpFrom.indexOf("http") !== 0) {
+                                        jumpFrom = _url.replace(/(:\/\/.*?\/)[\s\S]*/, "$1" + jumpFrom);
+                                    }
+                                    _url = jumpFrom;
                                 }
-                                _url = jumpFrom;
                             } else {
-                                _url = _url.replace(/(:\/\/.*?)\/[\s\S]*/, "$1").replace(/[:%]p{[\s\S]*/, '');
+                                if (ext) {
+                                    _url = `${jumpHtml}#jump{url=${encodeURIComponent(_url.replace(/[:%]p{[\s\S]*/, ''))}&charset=${data.charset}}`;
+
+                                    //storage.setItem("postUrl", [_url + "#from{" + jumpHtml + "}", data.charset]);
+                                    //_url = jumpHtml;
+                                } else {
+                                    storage.setItem("postUrl", [_url, data.charset]);
+                                    _url = _url.replace(/(:\/\/.*?)\/[\s\S]*/, "$1").replace(/[:%]p{[\s\S]*/, '');
+                                }
                             }
                             return _url;
                         };
                         if (targetUrlData.indexOf('%input{') !== -1) {
                             self.showCustomInputWindow(targetUrlData, _url => {
                                 _url = processPostUrl(_url);
+                                if (!_url) return;
                                 ele.href = _url;
                                 if (ele.target === '_blank') {
-                                    _GM_openInTab(ele.href, {active: true});
+                                    _GM_openInTab(ele.href, {active: true, insert: true});
                                 } else {
                                     location.href = ele.href;
                                 }
@@ -9939,23 +12031,25 @@
                             return;
                         } else {
                             targetUrlData = processPostUrl(targetUrlData);
+                            if (!targetUrlData) return;
                             ele.href = targetUrlData;
                         }
                     }
                     if (shift && !ctrl && !meta && !alt && e.isTrusted) return;
-                    if (/^(chrome|edge|about):/.test(targetUrlData)) {
+                    if (/^(chrome|edge|about|extension|moz-extension)/.test(targetUrlData)) {
                         if (e.preventDefault) e.preventDefault();
                         if (e.stopPropagation) e.stopPropagation();
                         if (ctrl) {
-                            _GM_openInTab(targetUrlData, {active: false});
+                            _GM_openInTab(targetUrlData, {active: false, insert: true});
                         } else {
-                            _GM_openInTab(targetUrlData, {active: true});
+                            _GM_openInTab(targetUrlData, {active: true, insert: true, close: ele.getAttribute("target") !== "_blank"});
                         }
+                        return false;
                     } else if ((alt || ctrl || meta || shift) && isPage) {
                         if ((ctrl || meta) && shift) {
                             _GM_openInTab(targetUrlData, {incognito: true});
                         } else if (ctrl || meta) {
-                            _GM_openInTab(targetUrlData, {active: false});
+                            _GM_openInTab(targetUrlData, {active: false, insert: true});
                         } else if (alt) {
                             if (data.match) {
                                 let match = data.match.replace(/\\/g, "");
@@ -9968,31 +12062,72 @@
                             }
                             let viewWidth = window.screen.availWidth || window.innerWidth || document.documentElement.clientWidth;
                             let viewHeight = window.screen.availHeight || window.innerHeight || document.documentElement.clientHeight;
-                            let showWidth = Math.min(viewWidth, 550);
-                            let showHeight = Math.min(viewHeight, 800);
-                            let left = viewWidth - showWidth;
-                            let top = (viewHeight - showHeight) / 2;
-                            window.open(targetUrlData + "#searchJumperMin" + (/#p{/.test(data.url) ? 'Post' : ''), "_blank", `width=${showWidth}, height=${showHeight}, location=0, resizable=1, status=0, toolbar=0, menubar=0, scrollbars=0, left=${left}, top=${top}`);
+                            let showWidth = searchData.prefConfig.popupWidth, showHeight = searchData.prefConfig.popupHeight, left = searchData.prefConfig.popupLeft, top = searchData.prefConfig.popupTop;
+                            if (showHeight) {
+                                showHeight = parseFloat(showHeight);
+                                showHeight = viewHeight / 100 * showHeight;
+                            } else {
+                                showHeight = Math.max(viewHeight / 3 * 2, viewHeight - 250);
+                            }
+                            if (showWidth) {
+                                showWidth = parseFloat(showWidth);
+                                showWidth = viewWidth / 100 * showWidth;
+                            } else {
+                                showWidth = Math.min(viewWidth, 650);
+                            }
+                            if (left) {
+                                left = parseFloat(left);
+                                left = viewWidth / 100 * left - showWidth / 2;
+                            } else {
+                                left = viewWidth - showWidth - 30;
+                            }
+                            if (top) {
+                                top = parseFloat(top);
+                                top = viewHeight / 100 * top - showHeight / 2;
+                            } else {
+                                top = (viewHeight - showHeight) / 2;
+                            }
+                            self.closePopupWindow();
+                            self.popupWindow = window.open(targetUrlData + "#searchJumperMin" + (/#p{/.test(data.url) ? 'Post' : ''), "_blank", `width=${showWidth}, height=${showHeight}, location=0, resizable=1, status=0, toolbar=0, menubar=0, scrollbars=0, left=${left}, top=${top}`);
                         } else if (shift) {
-                            _GM_openInTab(targetUrlData, {active: true});
+                            _GM_openInTab(targetUrlData, {active: true, insert: true});
                         }
+                        if (e.preventDefault) e.preventDefault();
+                        if (e.stopPropagation) e.stopPropagation();
+                        return false;
+                    } else if (isPage && ele.getAttribute("target") === "_blank" && !(alt || ctrl || meta || shift) && e.button === 0) {
+                        _GM_openInTab(targetUrlData, {active: true, insert: true});
                         if (e.preventDefault) e.preventDefault();
                         if (e.stopPropagation) e.stopPropagation();
                         return false;
                     }
                 };
                 //ele.href = data.url;
-                ele.addEventListener('mousedown', action, false);
+                ele.addEventListener('mousedown', action, true);
                 ele.addEventListener('mouseup', e => {
                     if (e.stopPropagation) e.stopPropagation();
                 }, true);
                 ele.addEventListener('click', clickHandler, true);
 
+                ele.addEventListener('auxclick', e => {
+                    if (clicked && e.preventDefault) {
+                        e.preventDefault();
+                        return false;
+                    }
+                }, true);
+
+                ele.addEventListener('contextmenu', e => {
+                    if (clicked && e.preventDefault) {
+                        e.preventDefault();
+                        return false;
+                    }
+                }, true);
+
                 let tipsStr = ele.dataset.name;
-                if (data.shortcut) {
-                    tipsStr += ` (${data.ctrl ? "Ctrl + " : ""}${data.shift ? "Shift + " : ""}${data.alt ? "Alt + " : ""}${data.meta ? "Meta + " : ""}${data.shortcut.replace("Key", "")})`;
+                if (shortcut) {
+                    tipsStr += ` (${data.ctrl ? "Ctrl + " : ""}${data.shift ? "Shift + " : ""}${data.alt ? "Alt + " : ""}${data.meta ? "Meta + " : ""}${shortcut.replace("Key", "")})`;
                 }
-                let lastUrl, anylizing = false, tipsShowing = false;
+                let anylizing = false, tipsShowing = false;
                 let setTips = async (target, url, again) => {
                     self.tipsPos(target, '<span class="loader"></span><font>Loading...</font>');
                     tipsShowing = false;
@@ -10000,34 +12135,73 @@
                         try {
                             url = url.replace(/^showTips:/, '');
                             anylizing = true;
-                            let tipsResult = await self.anylizeShowTips(url, ele.dataset.name);
-                            anylizing = false;
-                            if (self.tips.style.opacity == 0 || self.tips.innerHTML.indexOf('<span class="loader">') !== 0) return;
-                            if (Array && Array.isArray && Array.isArray(tipsResult)) {
-                                tipsData = tipsResult[1];
-                                tipsResult = tipsResult[0];
-                            }
-                            if (tipsResult) {
-                                if (tipsResult != "null" && tipsResult != "No result") {
-                                    tipsResult = `<div style="font-size: initial; line-height: initial; font-weight: normal; pointer-events: all; padding: 5px;"><style>.search-jumper-tips{padding:0;}</style>${tipsResult}</div>`;
-                                    tipsShowing = true;
+                            let inputGroup;
+                            let setTipsUrl = async (url, force) => {
+                                let tipsResult = await self.anylizeShowTips(url, ele.dataset.name, target, inputGroup);
+                                anylizing = false;
+                                if (!force) {
+                                    if (self.tips.style.opacity == 0 || self.tips.innerHTML.indexOf('<span class="loader">') !== 0) {
+                                        tipsShowing = true;
+                                        return;
+                                    }
                                 }
-                                //self.tips.style.transition = "none";
-                                self.tipsPos(target, tipsResult);
+                                if (Array && Array.isArray && Array.isArray(tipsResult)) {
+                                    tipsData = tipsResult[1];
+                                    tipsResult = tipsResult[0];
+                                }
+                                if (tipsResult) {
+                                    if (tipsResult != "null" && tipsResult != "No result") {
+                                        tipsResult = `<div>${tipsResult}</div>`;
+                                        tipsShowing = true;
+                                    }
+                                    //self.tips.style.transition = "none";
+                                    self.tipsPos(target, tipsResult, inputGroup);
+                                    addHistory();
+                                    setTimeout(() => {
+                                        self.tips.style.pointerEvents = "all";
+                                    }, 100);
+                                }
                             }
+
+                            if (/%input{/.test(url)) {
+                                inputGroup = this.createShowTipsInput(url, async newUrl => {
+                                    self.tipsPos(target, '<span class="loader"></span><font>Loading...</font>');
+                                    await setTipsUrl(newUrl, true);
+                                });
+                                if (/%input{[^},]*}/.test(url)) {
+                                    url = await this.showCustomInputWindow(url);
+                                    if (!url) return;
+                                } else {
+                                    let inputMatch;
+                                    while(inputMatch = url.match(/%input{([^},]+),\s*([^}/]*).*?}/)) {
+                                        let inputName = inputMatch[1];
+                                        let defaultValue = inputMatch[2];
+                                        url = url.replace(inputMatch[0], defaultValue).replaceAll(`input{${inputName}}`, defaultValue);
+                                        inputMatch = url.match(/%input{([^},]+),\s*([^}/]*).*?}/);
+                                    }
+                                }
+                            }
+                            await setTipsUrl(url);
+
                         } catch(e) {debug(e)}
                     }
                 };
                 let showTipsHandler = async (target, time = 1000) => {
-                    if (!target) return;
+                    if (ele.dataset.disable) return;
+                    if (!target || target.nodeType !== 1) return;
+                    if (self.preList) {
+                        self.preList.style.visibility = "hidden";
+                        self.listArrow.style.cssText = "";
+                    }
                     tipsData = null;
                     clearTimeout(self.requestShowTipsTimer);
                     self.waitForShowTips = false;
                     self.tipsPos(target, tipsStr);
                     if (showTips) {
+                        self.stopInput = true;
                         let url = await getUrl();
-                        if (!url) return;
-                        if (lastUrl === url) {
+                        self.stopInput = false;
+                        if (url && self.lastUrl === url) {
                             if (anylizing) {
                                 self.tipsPos(target, "<span class='loader'></span><font>Loading...</font>");
                             } else {
@@ -10035,8 +12209,10 @@
                             }
                         } else {
                             self.waitForShowTips = true;
-                            self.requestShowTipsTimer = setTimeout(() => {
-                                lastUrl = url;
+                            self.requestShowTipsTimer = setTimeout(async () => {
+                                url = url || await getUrl();
+                                if (!url) return;
+                                self.lastUrl = url;
                                 setTips(target, url);
                                 self.waitForShowTips = false;
                             }, time);
@@ -10051,14 +12227,58 @@
                         self.waitForShowTips = true;
                     }
                 }, false);
+                let scaleMove = e => {
+                    if (self.funcKeyCall || searchData.prefConfig.noAni) return;
+                    let leftRight = self.con.classList.contains("search-jumper-left") ||
+                            self.con.classList.contains("search-jumper-right");
+                    let newDockerScaleBtns = [];
+                    let curRect = ele.getBoundingClientRect();
+                    let offset = leftRight ? Math.abs(e.clientY - curRect.top) / curRect.height : Math.abs(e.clientX - curRect.left) / curRect.width;
+                    let scale1st = 0.1;
+                    let scale2nd = 0.1;
+                    ele.style.setProperty("--scale", 1 + scale1st + scale2nd);
+                    newDockerScaleBtns.push(ele);
+                    let pre = ele.previousElementSibling;
+                    if (pre && /^A$/i.test(pre.nodeName)) {
+                        pre.style.setProperty("--scale", 1 + scale2nd + scale1st * (1 - offset));
+                        newDockerScaleBtns.push(pre);
+                        let prepre = pre.previousElementSibling;
+                        if (prepre && /^A$/i.test(prepre.nodeName)) {
+                            prepre.style.setProperty("--scale", 1 + scale2nd * (1 - offset));
+                            newDockerScaleBtns.push(prepre);
+                        }
+                    }
+                    let next = ele.nextElementSibling;
+                    if (next && /^A$/i.test(next.nodeName)) {
+                        next.style.setProperty("--scale", 1 + scale2nd + scale1st * offset);
+                        newDockerScaleBtns.push(next);
+                        let nextnext = next.nextElementSibling;
+                        if (nextnext && /^A$/i.test(nextnext.nodeName)) {
+                            nextnext.style.setProperty("--scale", 1 + scale2nd * offset);
+                            newDockerScaleBtns.push(nextnext);
+                        }
+                    }
+                    self.dockerScaleBtns.forEach(btn => {
+                        if (newDockerScaleBtns.indexOf(btn) === -1) {
+                            btn.style.setProperty("--scale", 1);
+                        }
+                    });
+                    self.dockerScaleBtns = newDockerScaleBtns;
+                };
                 ele.addEventListener('mouseenter', e => {
+                    if (e.stopPropagation) e.stopPropagation();
+                    if (ele.dataset.disable) return;
+                    if (tipsShowing && self.lastTips === ele && self.tips.style.opacity == 1) {
+                        return;
+                    }
+                    self.lastTips = ele;
                     if (showTips) {
                         if (touchend) {
                             touchend = false;
                             return;
                         }
                         if (hasWordParam) {
-                            let keywords = self.searchJumperInputKeyWords.value || getKeywords();
+                            let keywords = self.searchJumperInputKeyWords.value || self.tileInput.value || getKeywords();
                             if (!keywords) {
                                 self.waitForShowTips = true;
                                 self.tipsPos(ele, tipsStr);
@@ -10067,20 +12287,57 @@
                         }
                     }
                     showTipsHandler(ele);
-                }, false);
+                }, true);
                 ele.addEventListener('mousemove', e => {
+                    if (ele.dataset.disable) return;
+                    scaleMove(e);
                     self.clingPos(ele, self.tips);
                 }, false);
                 ele.addEventListener('showTips', e => {
-                    showTipsHandler(targetElement, 0);
+                    if (ele.dataset.disable) return;
+                    self.waitForHide(0);
+                    self.appendBar();
+                    self.closeOpenType();
+                    self.con.style.display = "";
+                    //self.setFuncKeyCall(true);
+                    showTipsHandler(e.detail || targetElement, 0);
                 }, false);
                 ele.addEventListener('mouseleave', e => {
+                    if (ele.dataset.disable) return;
                     if (!tipsShowing) {
                         self.tips.style.opacity = 0;
+                        self.tips.style.pointerEvents = '';
                         clearTimeout(self.requestShowTipsTimer);
                     }
                 }, false);
+                ele.addEventListener('drop', e => {
+                    self.searchBySiteName(name, e);
+                }, false);
+                ele.addEventListener('dragover', e => {
+                    e.preventDefault();
+                }, false);
                 return ele;
+            }
+
+            closePopupWindow() {
+                if (!searchData.prefConfig.closePopupWhenClick) return;
+                if (this.popupWindow) {
+                    this.popupWindow.close();
+                    this.popupWindow = null;
+                }
+            }
+
+            closeOpenType() {
+                let openType = this.bar.querySelector('.search-jumper-type.search-jumper-open>span');
+                if (openType) {
+                    this.funcKeyCall = false;
+                    if (openType.onmouseup) {
+                        openType.onmouseup();
+                    } else {
+                        let mouseEvent = new PointerEvent("mouseup");
+                        openType.dispatchEvent(mouseEvent);
+                    }
+                }
             }
 
             addToHighlightGroup(findWords, addToGroup) {
@@ -10098,19 +12355,166 @@
                 this.refreshPageWords(this.lockWords);
             }
 
-            async anylizeShowTips(data, name) {
-                let tipsResult;
+            streamUpdate(data) {
+                this.streamUpdateCallBack && this.streamUpdateCallBack(data);
+            }
+
+            createShowTipsInput(content, cb) {
+                let group = document.createElement('div');
+                group.className = 'showTips-inputGroup';
+                let tempUrl = content;
+                let inputChildren = [];
+
+                let geneFinalUrl = () => {
+                    let finalValue = tempUrl;
+                    let index = 0;
+                    [].forEach.call(inputChildren, ele => {
+                        let value;
+                        if (ele.className == "select") {
+                            value = ele.children[0].value;
+                        } else value = ele.value;
+                        finalValue = finalValue.replaceAll('◎' + index, value || '');
+                        index++;
+                    });
+                    cb(finalValue);
+                };
+
+                let inputMatch = tempUrl.match(/%input{(.*?[^\\])}/);
+                let index = 0;
+                while (inputMatch) {
+                    let param = inputMatch[1];
+                    let inputTitle = document.createElement('div');
+                    inputTitle.className = 'showTips-input-title';
+                    if (/^".*","/.test(param)) {
+                        param = param.substr(1, param.length - 2).split('","');
+                    } else {
+                        param = param.replace(/\\,/g, "◎SJ").split(",").map(str => str.replace(/◎SJ/g, ","));
+                    }
+                    if (param.length === 1) {//input
+                        param = param[0].replace(/\\\|/g, "◎SJ").split("|").map(str => str.replace(/◎SJ/g, "|"));
+                        let pa = document.createElement('div');
+                        inputTitle.innerText = param[0];
+                        pa.appendChild(inputTitle);
+                        let paramInput = document.createElement('input');
+                        paramInput.type = 'text';
+                        if (param.length > 1) paramInput.title = param[1];
+                        pa.appendChild(paramInput);
+                        group.appendChild(pa);
+                        inputChildren.push(paramInput);
+                    } else if (param.length >= 2) {//select
+                        let titleSplit = param[0].replace(/\\}/g, "}");
+                        if (/^'.*'\/'/.test(titleSplit)) {
+                            titleSplit = titleSplit.substr(1, titleSplit.length - 2).split("'/'");
+                        } else {
+                            titleSplit = titleSplit.replace(/\\\//g, "◎SJ").split("/").map(str => str.replace(/◎SJ/g, "/"));
+                        }
+                        let optionSplit = param.slice(1).join(",");
+                        if (/^'.*'\/'/.test(optionSplit)) {
+                            optionSplit = optionSplit.substr(1, optionSplit.length - 2).split("'/'");
+                        } else {
+                            optionSplit = optionSplit.replace(/\\\//g, "◎SJ").split("/").map(str => str.replace(/◎SJ/g, "/"));
+                        }
+                        let singleTitle = titleSplit.length === optionSplit.length + 1;
+                        let pa = document.createElement('div');
+                        inputTitle.innerText = titleSplit[0];
+                        pa.appendChild(inputTitle);
+                        let paramSelectInput = document.createElement('input');
+                        paramSelectInput.type = "text";
+                        paramSelectInput.value = optionSplit[0];
+                        let paramSelect = document.createElement('div');
+                        paramSelect.className = "select";
+                        paramSelect.appendChild(paramSelectInput);
+
+                        let selectTips = document.createElement('p');
+                        selectTips.innerText = '';
+                        paramSelect.appendChild(selectTips);
+
+                        let options = document.createElement('div');
+                        options.className = "options";
+                        paramSelect.appendChild(options);
+
+                        let option = document.createElement("p");
+                        option.setAttribute("value", "");
+                        setHTML(option, '<b>Select option</b>');
+                        options.appendChild(option);
+                        option.addEventListener("click", e => {
+                            options.style.visibility = "hidden";
+                            setTimeout(() => {
+                                options.style.visibility = "";
+                            }, 0);
+                            paramSelectInput.value = "";
+                            selectTips.innerText = 'Select option';
+                        });
+
+                        for (let i = 0; i < optionSplit.length; i++) {
+                            let value = optionSplit[i];
+                            let option = document.createElement("p");
+                            option.setAttribute("value", value);
+                            if (singleTitle) {
+                                let title = titleSplit[i + 1];
+                                title = title.replace(/\\\|/g, "◎SJ").split("|").map(str => str.replace(/◎SJ/g, "|"));
+                                option.innerText = title[0];
+                                if (title.length > 1) {
+                                    option.title = title[1];
+                                }
+                            } else {
+                                option.innerText = value;
+                            }
+                            option.addEventListener("click", e => {
+                                options.style.visibility = "hidden";
+                                setTimeout(() => {
+                                    options.style.visibility = "";
+                                }, 0);
+                                paramSelectInput.value = option.getAttribute("value");
+                                selectTips.innerText = '';
+                            });
+                            options.appendChild(option);
+                        }
+                        paramSelectInput.addEventListener("change", e => {
+                            selectTips.innerText = '';
+                        });
+                        paramSelect.addEventListener("mouseenter", e => {
+                            paramSelect.focus();
+                            const rect = paramSelect.getBoundingClientRect();
+                            options.style.top = `${rect.bottom}px`;
+                            options.style.left = `${rect.left}px`;
+                            options.style.width = `${rect.width}px`;
+                        });
+                        pa.appendChild(paramSelect);
+                        group.appendChild(pa);
+                        inputChildren.push(paramSelect);
+                    }
+                    tempUrl = tempUrl.replace(inputMatch[0], '◎' + index).replaceAll(`input{${inputTitle.innerText}}`, '◎' + index);
+                    index++;
+                    inputMatch = tempUrl.match(/%input{(.*?[^\\])}/);
+                }
+                if (group.children.length) {
+                    let searchBtn = document.createElement('div');
+                    searchBtn.className = 'searchBtn';
+                    setHTML(searchBtn, searchSvg);
+                    searchBtn.addEventListener("click", e => {
+                        geneFinalUrl();
+                    });
+                    group.appendChild(searchBtn);
+                }
+                return group;
+            }
+
+            async anylizeShowTips(data, name, target, inputGroup) {
+                let tipsResult, self = this;
                 try {
                     const calcReg = /([^\\]|^)([\+\-*/])([\d\.]+)$/;
                     const cacheReg = /\|cache\=(\d+)$/;
-                    const postReg = /%p{(.*?)}/;
+                    const postReg = /%p(\{+)/;
+                    const headersReg = /#headers({.*?})/;
+                    const streamReg = /#stream({(.*?)})?/;
                     const thenReg = /.then{(.*?)}/;
-                    data = data.replace(/^showTips:/, '').trim();
+                    data = data.replace(/^showTips:/, '').replace(/{name}/g, name).trim();
                     if (/^https?:/.test(data)) {
                         let url = data.split("\n");
                         if (url.length == 1) url = data.split(" ");
-                        url = url[0];
-                        data = data.replace(url, "").trim().replace(/\\{/g, "showTipsLeftBrace").replace(/\\}/g, "showTipsRightBrace").replace(/{name}/g, name).replace(/{url}/g, '【SEARCHJUMPERURL】');
+                        url = url[0].replace(/【SearchJumperBreak】/g, "\n");
+                        data = data.replace(/【SearchJumperBreak】/g, "\n").replace(url, "").trim().replace(/\\{/g, "showTipsLeftBrace").replace(/\\}/g, "showTipsRightBrace").replace(/{url}/g, '【SEARCHJUMPERURL】');
                         let cache = url.match(cacheReg);
                         if (cache) {
                             cache = parseInt(cache[1]);
@@ -10133,10 +12537,10 @@
 
                         let allValue = [];
                         let calcJson = (json, template) => {
-                            let finalData = data;
+                            let finalData = data, allFailed = true;
                             while (template) {
-                                let templateArr = template[1].split("|");
-                                let props = templateArr[0].split("."), value = json, arrayValue = null;
+                                let templateArr = template[1].replace(/\\\|/g, "【searchJumperJsonSplit】").split("|");
+                                let props = templateArr[0].replace(/【searchJumperJsonSplit】/g, "|").replace(/\[(\d+)\]/g, ".$1").replace(/\[all\]/g, ".all").split("."), value = json, arrayValue = null;
                                 props.shift();
                                 props.forEach(prop => {
                                     if (arrayValue) {
@@ -10195,12 +12599,23 @@
                                             }
                                         });
                                         value = value.toFixed(2);
+                                    } else {
+                                        let fullReg = calcStr.match(/^\/(.*)\/(\w?)$/);
+                                        let regGroup = fullReg ? new RegExp(fullReg[1], fullReg[2]) : new RegExp(calcStr);
+                                        let valueMatch = value.match(regGroup);
+                                        if (valueMatch) {
+                                            value = valueMatch[1];
+                                        }
                                     }
                                 }
                                 if (!value) value = "";
+                                else allFailed = false;
                                 allValue.push(value);
                                 finalData = finalData.replace(template[0], value);
                                 template = finalData.match(/{(.*?)}/);
+                            }
+                            if (allFailed) {
+                                console.log("Error:", json);
                             }
                             finalData = finalData.replace(/showTipsLeftBrace/g, "{").replace(/showTipsRightBrace/g, "}");
                             return finalData;
@@ -10208,7 +12623,7 @@
 
                         let template = data.match(/{(.*?)}/);
                         if (tipsResult) {
-                            if (template && template[1].indexOf("json.") === 0) {
+                            if (template && template[1].indexOf("json") === 0) {
                                 data = data.replace(/【SEARCHJUMPERURL】/g, url);
                                 tipsResult = calcJson(tipsResult, template);
                                 tipsResult = [tipsResult, "\n" + allValue.join(",")];
@@ -10217,12 +12632,86 @@
                             let storeData;
                             let postMatch = url.match(postReg), fetchOption = {}, _url = url;
                             if (postMatch) {
-                                fetchOption.body = postMatch[1];
-                                fetchOption.method = "POST";
-                                _url = _url.replace(postMatch[0], "");
+                                let braceNum = postMatch[1].length;
+                                postMatch = url.match(new RegExp(`%p\\{+([\\s\\S]*?)\\}{${braceNum}}`));
+                                if (postMatch) {
+                                    let body = postMatch[1].replace(/\n/g, "\\n");
+                                    if (body.indexOf("%") === 0) {
+                                        try {
+                                            body = decodeURIComponent(body);
+                                        } catch(e) {}
+                                    }
+                                    fetchOption.body = body;
+                                    fetchOption.method = "POST";
+                                    _url = _url.replace(postMatch[0], "");
+                                }
                             }
+                            let headersMatch = url.match(headersReg);
+                            if (headersMatch) {
+                                let headers = headersMatch[1];
+                                if (headers.indexOf("%") === 0 || headers.indexOf("%") === 1) {
+                                    try {
+                                        headers = decodeURIComponent(headers);
+                                    } catch(e) {}
+                                }
+                                fetchOption.headers = JSON.parse(headers);
+                                _url = _url.replace(headersMatch[0], "");
+                            }
+
                             let failed = false, fetchData;
-                            if (template && template[1].indexOf("json.") === 0) {
+                            let isJson = (template && template[1].indexOf("json") === 0);
+                            let streamMatch = url.match(streamReg);
+                            if (streamMatch) {
+                                fetchOption.responseType = "stream";
+                                fetchOption.streamMode = streamMatch[2] || "concat";
+                                _url = _url.replace(streamMatch[0], "");
+                                tipsResult = await new Promise(resolve => {
+                                    fetchOption.onstream = data => {
+                                        let result;
+                                        if (isJson) {
+                                            result = data.json();
+                                            if (!result) return;
+                                            result = calcJson(result, template);
+                                        } else result = data.text;
+                                        self.tipsPos(target, result, inputGroup);
+                                        self.tips.style.pointerEvents = "all";
+                                        resolve && resolve(result);
+                                    };
+                                    if (ext) {
+                                        self.streamUpdateCallBack = data => {
+                                            let result;
+                                            if (isJson) {
+                                                if (!data.json) return;
+                                                result = calcJson(data.json, template);
+                                            } else result = data.text;
+                                            self.tipsPos(target, result, inputGroup);
+                                            self.tips.style.pointerEvents = "all";
+                                            resolve && resolve(result);
+                                        };
+                                        fetchData = new Promise((resolve) => {
+                                            chrome.runtime.sendMessage({action: "showTips", detail: {from: url + `\n{${template[1]}}`}}, function(r) {
+                                                data = data.replace(/【SEARCHJUMPERURL】/g, (r && r.finalUrl) || "");
+                                                resolve(isJson ? r.json : r.text);
+                                            });
+                                        });
+                                    } else {
+                                        fetchData = GM_fetch(_url, fetchOption).then(r => {
+                                            data = data.replace(/【SEARCHJUMPERURL】/g, r.finalUrl);
+                                            return isJson ? r.json() : r.text;
+                                        });
+                                    }
+                                    fetchData.then(r => {
+                                        let finalData = isJson ? (r && calcJson(r, template)) : r;
+                                        if (!finalData) return;
+                                        self.tipsPos(target, finalData, inputGroup);
+                                        resolve && resolve(finalData);
+                                    });
+                                });
+                                if (!tipsResult) {
+                                    tipsResult = "No result";
+                                    failed = true;
+                                }
+                            } else if (isJson) {
                                 let allValue = [];
                                 if (ext) {
                                     fetchData = new Promise((resolve) => {
@@ -10271,7 +12760,7 @@
                                         let thenEleSel = thenEleSelArr.shift();
                                         let thenUrl = await fetchData.then(r => {
                                             let doc = document.implementation.createHTMLDocument('');
-                                            doc.documentElement.innerHTML = createHTML(r);
+                                            setHTML(doc.documentElement, r, doc);
                                             let ele = getElement(thenEleSel, doc);
                                             if (!ele) return null;
                                             let basepath = doc.querySelector("base");
@@ -10284,7 +12773,7 @@
                                                     resolve((r && r.data) || "");
                                                 });
                                             });
-                                        } else return "No result";;
+                                        } else return "No result";
                                     }
                                 } else {
                                     fetchData = GM_fetch(_url, fetchOption).then(r => {
@@ -10298,7 +12787,7 @@
                                         let thenEleSel = thenEleSelArr.shift();
                                         let thenUrl = await fetchData.then(r => {
                                             let doc = document.implementation.createHTMLDocument('');
-                                            doc.documentElement.innerHTML = createHTML(r);
+                                            setHTML(doc.documentElement, r, doc);
                                             let ele = getElement(thenEleSel, doc);
                                             if (!ele) return null;
                                             let basepath = doc.querySelector("base");
@@ -10312,12 +12801,14 @@
                                         } else return "No result";
                                     }
                                 }
+                                let title;
                                 tipsResult = await fetchData.then(r => {
                                     if (!data) {
                                         return r;
                                     }
                                     let doc = document.implementation.createHTMLDocument('');
-                                    doc.documentElement.innerHTML = createHTML(r);
+                                    setHTML(doc.documentElement, r, doc);
+                                    title = doc.title;
                                     let finalData = data;
                                     while (template) {
                                         let value = "";
@@ -10362,21 +12853,85 @@
                                 if (!tipsResult) {
                                     tipsResult = "No result";
                                     failed = true;
+                                } else {
+                                    this.insertHistoryUrl(url, title);
                                 }
                                 tipsResult = [tipsResult, url];
                                 storeData = tipsResult;
                             }
                             if (!failed) {
+                                tipsResult = this.calcResult(tipsResult);
                                 tipsStorage.push({url: url, data: storeData, time: Date.now() / 1000 + cache});
                                 if (tipsStorage.length > 50) tipsStorage.shift();
                                 storage.setItem("tipsStorage", tipsStorage);
                             }
                         }
                     } else {
+                        data = data.replace(/【SearchJumperBreak】/g, "\n")
                         tipsResult = /\breturn\b/.test(data) ? await new AsyncFunction('fetch', 'storage', 'name', '"use strict";' + data)(GM_fetch, storage, name) : data;
+                        tipsResult = this.calcResult(tipsResult);
+                        if (targetElement && targetElement.href) {
+                            let newTitle = targetElement.title || targetElement.alt || targetElement.innerText;
+                            this.insertHistoryUrl(targetElement.href, newTitle);
+                        }
                     }
                 } catch(e) {debug(e)}
                 return tipsResult;
+            }
+
+            calcResult(result) {
+                let isString = typeof result === 'string';
+                let str = isString ? result : result[0];
+                const calcRegFull = /{([\d\.]+)(([\+\-*/][\d\.]+)+)}/;
+                const calcRegOperate = /([\+\-*/])([\d\.]+)/;
+                let needCalc = str.match(calcRegFull);
+                if (needCalc) {
+                    let calcArr = [];
+                    let fullMatch = needCalc[0];
+                    let value = parseFloat(needCalc[1]);
+                    let calcStr = needCalc[2];
+                    needCalc = calcStr.match(calcRegOperate);
+                    while (needCalc) {
+                        calcStr = calcStr.replace(needCalc[0], "");
+                        calcArr.push([needCalc[1], needCalc[2]]);
+                        needCalc = calcStr.match(calcRegOperate);
+                    }
+                    calcArr.forEach(calc => {
+                        let param = parseFloat(calc[1]);
+                        switch (calc[0]) {
+                            case "+":
+                                value += param;
+                                break;
+                            case "-":
+                                value -= param;
+                                break;
+                            case "*":
+                                value *= param;
+                                break;
+                            case "/":
+                                value /= param;
+                                break;
+                        }
+                    });
+                    value = value.toFixed(2);
+                    str = str.replace(fullMatch, value);
+                }
+                if (isString) {
+                    result = str;
+                } else {
+                    result[0] = str;
+                }
+                return result;
+            }
+
+            insertHistoryUrl(url, title) {
+                if (url.indexOf(location.host) === -1) return;
+                let curUrl = location.href;
+                let oldTitle = document.title;
+                _unsafeWindow.history.pushState('', title, url);
+                document.title = title;
+                _unsafeWindow.history.replaceState('', oldTitle, curUrl);
+                document.title = oldTitle;
             }
 
             checkScroll(noIntoView, noSmooth) {
@@ -10413,14 +12968,14 @@
             }
 
             reopenType(type) {
-                let mouseEvent = new PointerEvent("mousedown");
+                let mouseEvent = new PointerEvent("mouseup");
                 if (type.parentNode.classList.contains('search-jumper-open')) {
-                    if (type.onmousedown) type.onmousedown();
+                    if (type.onmouseup) type.onmouseup();
                     else {
                         type.dispatchEvent(mouseEvent);
                     }
                 }
-                if (type.onmousedown) type.onmousedown();
+                if (type.onmouseup) type.onmouseup();
                 else {
                     type.dispatchEvent(mouseEvent);
                 }
@@ -10442,11 +12997,21 @@
                 else if (!selectStr && targetElement != getBody(document) && (targetElement.className != "searchJumper" || !/^MARK$/i.test(targetElement.nodeName))) {
                     let _targetElement = targetElement, children;
                     while (_targetElement && _targetElement.nodeName) {
-                        if (_targetElement.nodeName.toUpperCase() == 'IMG' || _targetElement.nodeName.toUpperCase() == 'AUDIO' || _targetElement.nodeName.toUpperCase() == 'VIDEO' || _targetElement.nodeName.toUpperCase() == 'A') break;
+                        if (/^(img|audio|video|a)$/i.test(_targetElement.nodeName)) break;
                         if (_targetElement.parentNode) {
-                            children = _targetElement.parentNode.querySelectorAll("img,audio,video,a");
+                            if (/^(img|audio|video|a)$/i.test(_targetElement.parentNode.nodeName)) {
+                                _targetElement = _targetElement.parentNode;
+                                break;
+                            }
+                            children = _targetElement.parentNode.querySelectorAll("audio,video");
+                            if (children && children.length !== 1) {
+                                children = _targetElement.parentNode.querySelectorAll("img");
+                            }
+                            if (children && children.length !== 1) {
+                                children = _targetElement.parentNode.querySelectorAll("a");
+                            }
                             if (children && children.length === 1) {
-                                if (children[0].offsetHeight && _targetElement.offsetHeight / children[0].offsetHeight < 2) {
+                                if (children[0].scrollHeight && _targetElement.scrollHeight / children[0].scrollHeight < 2) {
                                     _targetElement = children[0];
                                 }
                                 break;
@@ -10482,9 +13047,10 @@
                 this.bar.classList.remove("initShow");
                 this.tips.style.opacity = 0;
                 this.tips.style.display = "none";
-                this.tips.innerHTML = createHTML("");
+                this.tips.style.transition = "none";
+                setHTML(this.tips, "");
                 setTimeout(() => {this.bar.classList.add("initShow");}, 10);
-                let typeSel = "";
+                let typeSel = "", secondType = "";
                 if (selectStr) {
                     this.bar.classList.add("search-jumper-isInPage");
                     if (this.bar.style.display == "none" || _funcKeyCall) {
@@ -10529,7 +13095,7 @@
                         this.bar.classList.add("search-jumper-isTargetLink");
                         if (!typeSel) {
                             typeSel = "targetLink";
-                        }
+                        } else secondType = "targetLink";
                     }
                     if (!typeSel) {
                         this.bar.classList.add("search-jumper-isTargetPage");
@@ -10558,29 +13124,32 @@
                         });
                         self.reopenType(firstType);
                         self.insertHistory(firstType.parentNode);
+                        if (secondType) {
+                            targetTypes = this.bar.querySelectorAll(`.search-jumper-${secondType}:not(.notmatch)>span:first-child`);
+                            [].forEach.call(targetTypes, type => {
+                                if (type !== firstType) {
+                                    self.reopenType(type);
+                                }
+                            });
+                            self.reopenType(firstType);
+                        }
                     }
                 }
                 if (!_funcKeyCall && (searchData.prefConfig.disableAutoOpen || searchData.prefConfig.disableTypeOpen)) {
-                    let openType = this.bar.querySelector('.search-jumper-type.search-jumper-open>span');
-                    if (openType) {
-                        if (openType.onmousedown) {
-                            openType.onmousedown();
-                        } else {
-                            let mouseEvent = new PointerEvent("mousedown");
-                            openType.dispatchEvent(mouseEvent);
-                        }
-                    }
+                    this.closeOpenType();
                 }
                 self.setFuncKeyCall(_funcKeyCall);
                 if (_funcKeyCall) {
                     if (targetSiteImgs) {
                         [].forEach.call(targetSiteImgs, siteImg => {
                             if (siteImg.parentNode.style.display != "none" && siteImg.dataset.src) {
-                                siteImg.src = siteImg.dataset.src;
-                                delete siteImg.dataset.src;
+                                loadIcon(siteImg);
                             }
                         });
                     }
+                    self.allLists.forEach(list => {
+                        list.style.visibility = "hidden";
+                    });
                     self.con.classList.remove("search-jumper-scroll");
                     self.bar.style.cssText = "";
                     self.con.style.cssText = "";
@@ -10588,20 +13157,20 @@
                     let scrollLeft = document.documentElement.scrollLeft || document.body.scrollLeft;
                     let viewHeight = window.innerHeight || document.documentElement.clientHeight;
                     let tileOffset = searchData.prefConfig.tileOffset || 0;
-                    let clientX = pageX(e) - self.bar.clientWidth / 2 - (getComputedStyle(document.documentElement).position !== 'static' ? document.documentElement.offsetLeft : 0);
-                    if (clientX < 0) clientX = 5;
-                    else if (clientX + self.bar.clientWidth > viewWidth + scrollLeft) clientX = viewWidth + scrollLeft - self.bar.clientWidth - 20;
-                    let clientY = pageY(e);
-                    if (clientY > viewHeight / 5) clientY -= (self.bar.clientHeight + 20 + tileOffset);
-                    else clientY += (20 + tileOffset);
-                    if (pageX(e) < viewWidth / 2) {
-                        self.bar.style.left = clientX + scrollLeft + "px";
+                    let _clientX = pageX(e) - self.bar.clientWidth / 2 - (getComputedStyle(document.documentElement).position !== 'static' ? document.documentElement.offsetLeft : 0);
+                    if (_clientX < 0) _clientX = 5;
+                    else if (_clientX + self.bar.clientWidth > viewWidth + scrollLeft) _clientX = viewWidth + scrollLeft - self.bar.clientWidth - 20;
+                    let _clientY = pageY(e);
+                    if (clientY(e) > viewHeight / 5) _clientY -= (self.bar.clientHeight + 20 + tileOffset);
+                    else _clientY += (20 + tileOffset);
+                    if (clientX(e) < viewWidth / 2) {
+                        self.bar.style.left = _clientX + scrollLeft + "px";
                         self.bar.style.transformOrigin = '0 0';
                     } else {
-                        self.bar.style.right = viewWidth - clientX - self.bar.clientWidth - 15 + "px";
+                        self.bar.style.right = viewWidth - _clientX - self.bar.clientWidth - 15 + "px";
                         self.bar.style.transformOrigin = '100% 0';
                     }
-                    self.bar.style.top = clientY + "px";
+                    self.bar.style.top = _clientY + "px";
                     self.removeBar();
                     self.bar.style.opacity = 0;
                     setTimeout(() => {
@@ -10615,7 +13184,7 @@
                                     saladbowl.style.transform = saladbowl.style.transform.replace(/\d+px\)/, `${e.clientY - 15}px)`);
                                 }
                             }, 100);
-                        }, 10);
+                        }, 1);
                     }, 1);
                 } else {
                     self.bar.style.display = "";
@@ -10625,22 +13194,37 @@
 
             setFuncKeyCall(value) {
                 this.funcKeyCall = value;
-                if (value) {
-                    this.con.classList.add("funcKeyCall");
-                } else {
-                    this.con.classList.remove("funcKeyCall");
+                if (!this.con.classList.contains("search-jumper-showall")) {
+                    if (value) {
+                        this.tileInput.value = getKeywords();
+                        this.con.classList.add("funcKeyCall");
+                        this.bar.insertBefore(this.tileInput, this.bar.firstChild);
+                    } else {
+                        this.tileInput.value = "";
+                        this.con.classList.remove("funcKeyCall");
+                        this.tileInput.parentNode && this.tileInput.parentNode.removeChild(this.tileInput);
+                    }
                 }
             }
 
             initPos(relX, relY, posX, posY) {
                 if (this.preList) {
                     this.preList.style.visibility = "hidden";
+                    this.preList.style.opacity = 0;
                     this.listArrow.style.cssText = "";
                 }
-                relX = relX || searchData.prefConfig.position.x;
-                relY = relY || searchData.prefConfig.position.y;
-                posX = posX || searchData.prefConfig.offset.x;
-                posY = posY || searchData.prefConfig.offset.y;
+                if (typeof relX === 'undefined') {
+                    relX = searchData.prefConfig.position.x;
+                }
+                if (typeof relY === 'undefined') {
+                    relY = searchData.prefConfig.position.y;
+                }
+                if (typeof posX === 'undefined') {
+                    posX = searchData.prefConfig.offset.x;
+                }
+                if (typeof posY === 'undefined') {
+                    posY = searchData.prefConfig.offset.y;
+                }
                 let self = this;
                 let setClass = className => {
                     self.bar.style.cssText = "";
@@ -10653,22 +13237,22 @@
                         getBody(document).style.position = "absolute";
                         switch (className) {
                             case "search-jumper-left":
-                                getBody(document).style.width = `calc(100% - ${self.scale * 42}px)`;
+                                getBody(document).style.width = `calc(100vw - ${self.scale * 42}px)`;
                                 getBody(document).style.right = "0px";
                                 break;
                             case "search-jumper-right":
-                                getBody(document).style.width = `calc(100% - ${self.scale * 42}px)`;
+                                getBody(document).style.width = `calc(100vw - ${self.scale * 42}px)`;
                                 getBody(document).style.left = "0px";
                                 break;
                             case "search-jumper-bottom":
                                 getBody(document).style.width = "100%";
-                                getBody(document).style.height = `calc(100% - ${self.scale * 42}px)`;
+                                getBody(document).style.height = `calc(100vh - ${self.scale * 42}px)`;
                                 getBody(document).style.top = "0px";
                                 getBody(document).style.overflow = "auto";
                                 break;
                             default:
                                 getBody(document).style.width = "100%";
-                                getBody(document).style.height = `calc(100% - ${self.scale * 42}px)`;
+                                getBody(document).style.height = `calc(100vh - ${self.scale * 42}px)`;
                                 getBody(document).style.bottom = "0px";
                                 getBody(document).style.overflow = "auto";
                                 break;
@@ -10681,7 +13265,6 @@
                         let leftRight = self.con.classList.contains("search-jumper-left") ||
                             self.con.classList.contains("search-jumper-right");
                         searchTypes.forEach(ele => {
-                            let scrollSize = Math.max(ele.scrollWidth, ele.scrollHeight) + "px";
                             if (!ele.classList.contains("search-jumper-open")) {
                                 if (leftRight) {
                                     ele.style.width = "";
@@ -10691,30 +13274,24 @@
                                     ele.style.height = "";
                                 }
                             } else {
-                                if (leftRight) {
-                                    ele.style.width = "";
-                                    ele.style.height = scrollSize;
-                                } else {
-                                    ele.style.width = scrollSize;
-                                    ele.style.height = "";
+                                let scrollSize = Math.max(ele.scrollWidth, ele.scrollHeight);
+                                if (scrollSize) {
+                                    scrollSize += "px";
+                                    if (leftRight) {
+                                        ele.style.width = "";
+                                        ele.style.height = scrollSize;
+                                    } else {
+                                        ele.style.width = scrollSize;
+                                        ele.style.height = "";
+                                    }
                                 }
                             }
                         });
                     }, 1);
                 };
-                let viewWidth = window.innerWidth || document.documentElement.clientWidth;
-                let viewHeight = window.innerHeight || document.documentElement.clientHeight;
-                var maxSize = Math.max(self.bar.scrollWidth, self.bar.scrollHeight);
 
-                if (posX > viewWidth - maxSize) {
-                    posX = viewWidth - maxSize;
-                }
                 if (posX < 0) {
                     posX = 0;
-                }
-
-                if (posY > viewHeight - maxSize) {
-                    posY = viewHeight - maxSize;
                 }
                 if (posY < 0) {
                     posY = 0;
@@ -10757,6 +13334,8 @@
                         setClass("search-jumper-bottom");
                         self.bar.style.position = "fixed";
                         self.bar.style.left = posX + "px";
+                        self.bar.style.bottom = "0px";
+                        self.bar.style.top = "unset";
                     } else {
                         //左下
                         setClass("search-jumper-left");
@@ -10769,6 +13348,8 @@
                         setClass("search-jumper-bottom");
                         self.bar.style.position = "fixed";
                         self.bar.style.right = posX + "px";
+                        self.bar.style.bottom = "0px";
+                        self.bar.style.top = "unset";
                     } else {
                         //右下
                         setClass("search-jumper-right");
@@ -11024,7 +13605,7 @@
                 this.waitToRemoveSigns = [];
                 this.waitToAddSigns = [];
                 let selectRect = document.createElement("div");
-                selectRect.innerHTML = createHTML(`
+                setHTML(selectRect, `
                   <div class="dot top-left"></div>
                   <div class="dot top-right"></div>
                   <div class="dot bottom-left"></div>
@@ -11292,11 +13873,11 @@
             geneSelector(ele, id) {
                 let selector = ele.nodeName.toLowerCase();
                 if (selector !== "html" && selector !== "body") {
-                    if (id && ele.id && /^[\w\-_]+$/.test(ele.id)) selector = '#' + ele.id;
+                    if (id && ele.id && /^[a-z\-_][\w\-_]+$/i.test(ele.id)) selector = '#' + ele.id;
                     else {
                         if (ele.className) {
                             let classLen = ele.classList.length;
-                            selector += [].map.call(ele.classList, d => /^[\w]+$/.test(d) || (classLen < 3 && /^[\w\-_]+$/.test(d)) ? ('.' + d) : "").join('');
+                            selector += [].map.call(ele.classList, d => /^[a-z][\w]+$/i.test(d) || (classLen < 3 && /^[a-z\-_][\w\-_]+$/i.test(d)) ? ('.' + d) : "").join('');
                         }
                         let parent = ele.parentElement;
                         if (parent) {
@@ -11346,6 +13927,11 @@
                 }
             }
 
+            getElements() {
+                if (!this.inPicker || !this.signList || this.signList.length === 0) return null;
+                return this.signList.map(sign => sign[1]);
+            }
+
             openLinks() {
                 if (!window.confirm(i18n('batchOpenConfirm'))) return;
                 let links = [];
@@ -11368,7 +13954,7 @@
                     }
                 });
                 links.forEach(link => {
-                    _GM_openInTab(link, {active: false});
+                    _GM_openInTab(link, {active: false, insert: true});
                 });
             }
 
@@ -11533,11 +14119,18 @@
         }
 
         async function waitForElement(sel) {
-            if (!sel) return null;
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
+                const signal = splitTaskSignal;
                 let checkInv = setInterval(() => {
+                    if (signal?.aborted) {
+                        clearInterval(checkInv);
+                        reject(signal.reason);
+                        return;
+                    }
                     let result = null;
-                    if (sel === "@") {
+                    if (!sel) {
+                        result = document.readyState === "complete";
+                    } else if (sel === "@") {
                         result = targetElement;
                     } else result = getElement(sel);
                     if (result === false) return null;
@@ -11551,8 +14144,14 @@
 
         async function waitForElementHide(sel) {
             if (!sel) return null;
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
+                const signal = splitTaskSignal;
                 let checkInv = setInterval(() => {
+                    if (signal?.aborted) {
+                        clearInterval(checkInv);
+                        reject(signal.reason);
+                        return;
+                    }
                     let result = getElement(sel);
                     if (!result) {
                         clearInterval(checkInv);
@@ -11563,11 +14162,20 @@
         }
 
         let reachLast = false;
-        function startInput(input, v) {
+        async function startInput(input, v) {
+            checkSplitTask();
             if (!input) return true;
             targetElement = input;
-            let event = new Event('focus', { bubbles: true });
+            let event = new FocusEvent('focusin', { bubbles: true });
             input.dispatchEvent(event);
+            event = new Event('focus', { bubbles: true });
+            input.dispatchEvent(event);
+            const selection = window.getSelection();
+            const range = selection.rangeCount ? selection.getRangeAt(0) : new Range();
+            range.selectNode(input);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            await sleep(1);
             input.type !== 'file' && input.click && input.click();
             let lastValue = input.value;
             if (input.type == 'file') {
@@ -11593,24 +14201,35 @@
             } else if (input.nodeName.toUpperCase() == "TEXTAREA") {
                 var nativeTextareaValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
                 nativeTextareaValueSetter.call(input, v);
-            } else if (input.contentEditable == 'true') {
-                input.innerHTML = createHTML(v);
             } else {
-                let file = v;
-                if (file.indexOf('data:') == 0) {
-                    file = dataURLtoFile(file);
-                } else {
-                    let blob = new Blob([file], {
-                        type: 'text/plain'
-                    });
-                    file = new File([blob], 'noname.txt', { type: blob.type })
+                let contentEditableParent = input;
+                while (contentEditableParent && contentEditableParent.contentEditable !== 'true') {
+                    contentEditableParent = contentEditableParent.parentNode;
                 }
-                var pasteEvent = new ClipboardEvent('paste', {
-                    target: document.body,
-                    clipboardData: new DataTransfer()
-                });
-                pasteEvent.clipboardData.items.add(file);
-                input.dispatchEvent(pasteEvent);
+                if (contentEditableParent) {
+                    contentEditableParent.dispatchEvent(new InputEvent('beforeinput', {inputType: "insertText", data: v}));
+                    await sleep(1);
+                    if (input.innerText !== v) {
+                        if (splitTaskSignal) input.innerText = v;
+                        else setHTML(input, v);
+                    }
+                } else {
+                    let file = v;
+                    if (file.indexOf('data:') == 0) {
+                        file = dataURLtoFile(file);
+                    } else {
+                        let blob = new Blob([file], {
+                            type: 'text/plain'
+                        });
+                        file = new File([blob], 'noname.txt', { type: blob.type })
+                    }
+                    var pasteEvent = new ClipboardEvent('paste', {
+                        target: document.body,
+                        clipboardData: new DataTransfer()
+                    });
+                    pasteEvent.clipboardData.items.add(file);
+                    input.dispatchEvent(pasteEvent);
+                }
             }
             event = new Event('input', { bubbles: true });
             let tracker = input._valueTracker;
@@ -11624,6 +14243,7 @@
         }
 
         async function returnElement(sel, eleIndex = -1) {
+            checkSplitTask();
             reachLast = false;
             let ele;
             if (eleIndex >= 0) {
@@ -11647,18 +14267,21 @@
                 ele = await waitForElement(sel);
                 if (!ele) return true;
             }
+            checkSplitTask();
             return ele;
         }
 
         async function emuInput(sel, v, eleIndex = -1) {
             let input = await returnElement(sel, eleIndex);
+            checkSplitTask();
             if (input === true) return true;
-            startInput(input, v);
+            await startInput(input, v);
             return reachLast;
         }
 
         async function emuClick(sel, eleIndex = -1) {
             let btn = await returnElement(sel, eleIndex);
+            checkSplitTask();
             if (btn === true) return true;
             targetElement = btn;
             if(!PointerEvent) return btn.click();
@@ -11751,6 +14374,140 @@
             return reachLast;
         }
 
+        async function emuDblClick(sel, eleIndex = -1) {
+            let btn = await returnElement(sel, eleIndex);
+            if (btn === true) return true;
+            targetElement = btn;
+            let eventParam = {
+                isTrusted: true,
+                altKey: false,
+                azimuthAngle: 0,
+                bubbles: true,
+                button: 0,
+                buttons: 0,
+                clientX: 1,
+                clientY: 1,
+                cancelBubble: false,
+                cancelable: true,
+                composed: true,
+                ctrlKey: false,
+                defaultPrevented: false,
+                detail: 2,
+                eventPhase: 2,
+                fromElement: null,
+                height: 1,
+                isPrimary: false,
+                metaKey: false,
+                pointerId: 1,
+                pointerType: "mouse",
+                pressure: 0,
+                relatedTarget: null,
+                returnValue: true,
+                shiftKey: false,
+                toElement: null,
+                twist: 0,
+                which: 1
+            };
+            btn.focus();
+            var mouseEvent = new PointerEvent("mouseover",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            mouseEvent = new PointerEvent("pointerover",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            mouseEvent = new PointerEvent("mousedown",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            mouseEvent = new PointerEvent("pointerdown",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            mouseEvent = new PointerEvent("mouseup",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            mouseEvent = new PointerEvent("pointerup",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            btn.click();
+            btn.click();
+            mouseEvent = new MouseEvent("dblclick", {
+                ...eventParam,
+                view: _unsafeWindow
+            });
+            btn.dispatchEvent(mouseEvent);
+            debug(btn, `dblclick ${sel}`);
+            return reachLast;
+        }
+
+        async function emuRClick(sel, eleIndex = -1) {
+            let btn = await returnElement(sel, eleIndex);
+            if (btn === true) return true;
+            targetElement = btn;
+            let eventParam = {
+                isTrusted: true,
+                altKey: false,
+                azimuthAngle: 0,
+                bubbles: true,
+                button: 2,
+                buttons: 0,
+                clientX: 1,
+                clientY: 1,
+                cancelBubble: false,
+                cancelable: true,
+                composed: true,
+                ctrlKey: false,
+                defaultPrevented: false,
+                detail: 0,
+                eventPhase: 2,
+                fromElement: null,
+                height: 1,
+                isPrimary: false,
+                metaKey: false,
+                pointerId: 1,
+                pointerType: "mouse",
+                pressure: 0,
+                relatedTarget: null,
+                returnValue: true,
+                shiftKey: false,
+                toElement: null,
+                twist: 0,
+                which: 3
+            };
+            btn.focus();
+            var mouseEvent = new PointerEvent("mouseover",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            mouseEvent = new PointerEvent("pointerover",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            mouseEvent = new PointerEvent("mousedown",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            mouseEvent = new PointerEvent("pointerdown",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            mouseEvent = new PointerEvent("mouseup",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            mouseEvent = new PointerEvent("pointerup",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            mouseEvent = new PointerEvent("contextmenu",eventParam);
+            btn.dispatchEvent(mouseEvent);
+            debug(btn, `rclick ${sel}`);
+            return reachLast;
+        }
+
+        async function triggerPaste(element, value) {
+            if (!targetElement) return;
+            targetElement.focus();
+            if (typeof element.value !== "undefined") {
+                const startPos = element.selectionStart;
+                const endPos = element.selectionEnd;
+                let newValue = element.value.substring(0, startPos) + value + element.value.substring(endPos, element.value.length);
+                await startInput(element, newValue);
+                element.selectionStart = startPos + value.length;
+                element.selectionEnd = startPos + value.length;
+            } else {
+                const selection = window.getSelection();
+                const range = selection.getRangeAt(0);
+                if (!selection.toString()) {
+                    range.selectNode(element.childNodes.length === 1 ? element.firstChild : element);
+                }
+                range.deleteContents();
+                range.insertNode(document.createTextNode(value));
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }
+        }
+
         function submitByForm(charset, url, target) {
             url = url.replace(/#(j(umpFrom|f)?|from){(.*?)}/, "");
             currentFormParams = {charset: charset, url: url, target: target};
@@ -11782,7 +14539,7 @@
             if (charset) {
                 form.acceptCharset = charset;
             }
-            form.innerHTML = createHTML();
+            setHTML(form, "");
             form.target = target;
             form.action = targetUrl;
             params.forEach((v, k) => {
@@ -11808,31 +14565,50 @@
         }
 
         async function image2Base64(img) {
-            if (!img || !img.src) return null;
+            if (!img) return null;
+            if (img.dataset.src) {
+                img.src = img.dataset.src;
+            }
+            if (!img.src) return null;
             let urlSplit = img.src.split("/");
             if (urlSplit[2] == document.domain) {
                 let imgStyle = getComputedStyle(img);
                 var canvas = document.createElement("canvas");
-                canvas.width = img.naturalWidth || img.width || parseInt(imgStyle.width);
-                canvas.height = img.naturalHeight || img.height || parseInt(imgStyle.height);
                 var ctx = canvas.getContext("2d");
-                ctx.drawImage(img, 0, 0);
-                try {
-                    return (canvas.toDataURL("image/png"));
-                } catch (e) {
-                    return await imageSrc2Base64(img.src);
+                if (img.complete) {
+                    canvas.width = img.naturalWidth || img.width || parseInt(imgStyle.width);
+                    canvas.height = img.naturalHeight || img.height || parseInt(imgStyle.height);
+                    ctx.drawImage(img, 0, 0);
+                    try {
+                        return (canvas.toDataURL("image/png"));
+                    } catch (e) {
+                        return await imageSrc2Base64(img.src);
+                    }
+                } else {
+                    return await new Promise((resolve) => {
+                        img.addEventListener("load", async e => {
+                            canvas.width = img.naturalWidth || img.width || parseInt(imgStyle.width);
+                            canvas.height = img.naturalHeight || img.height || parseInt(imgStyle.height);
+                            ctx.drawImage(img, 0, 0);
+                            try {
+                                resolve(canvas.toDataURL("image/png"));
+                            } catch (e) {
+                                resolve(await imageSrc2Base64(img.src));
+                            }
+                        });
+                    });
                 }
             } else {
                 return await imageSrc2Base64(img.src);
             }
         }
 
-        async function imageSrc2Base64(src) {
+        async function imageSrc2Base64(src, icon = false) {
             let urlSplit = src.split("/");
             return new Promise((resolve) => {
                 if (ext) {
-                    chrome.runtime.sendMessage({action: "getImgBase64", detail: {img: src}}, function(r) {
-                        resolve(r);
+                    chrome.runtime.sendMessage({action: "getImgBase64", detail: {img: src, icon}}, function(r) {
+                        resolve(chrome.runtime.lastError ? null : r);
                     });
                 } else {
                     _GM_xmlhttpRequest({
@@ -11841,16 +14617,20 @@
                         responseType:'blob',
                         headers: {
                             origin: urlSplit[0] + "//" + urlSplit[2],
-                            referer: src,
+                            referer: location.href,
                             accept: "*/*"
                         },
                         onload: function(d) {
-                            var blob = d.response;
-                            var fr = new FileReader();
-                            fr.readAsDataURL(blob);
-                            fr.onload = function (e) {
-                                resolve(e.target.result);
-                            };
+                            try {
+                                var blob = d.response;
+                                var fr = new FileReader();
+                                fr.readAsDataURL(blob);
+                                fr.onload = function (e) {
+                                    resolve(e.target.result);
+                                };
+                            } catch(e) {
+                                resolve(null);
+                            }
                         },
                         onerror: function(){
                             resolve(null);
@@ -11880,43 +14660,56 @@
             return canvas.toDataURL("image/png");
         }
 
-        function cacheFontIcon(icon) {
+        async function cacheFontIcon(icon) {
+            if (ext && !searchData.prefConfig.cacheSwitch) return;
             let iconName = icon.className.trim().replace('fa fa-', '').replace(/ /g, '_');
             if (cacheIcon[iconName]) return;
             let cache = icon2Base64(icon);
             if (cache == 'data:,' || !cache) return;
+            if (ext) {
+                await storage.setItem('cacheIcon', {[iconName]: cache}, true);
+                return;
+            }
             cacheIcon[iconName] = cache;
             storage.setItem("cacheIcon", cacheIcon);
         }
 
         async function cacheAction(target) {
+            let cache;
+            if (target.nodeName.toUpperCase() == 'IMG') {
+                let src = target.dataset.src || target.dataset.iconSrc || target.src;
+                if (src) {
+                    if (ext) {
+                        if (/^data:/.test(src)) return src;
+                        return imageSrc2Base64(src, true);
+                    }
+                    if (cacheIcon[src]) return cacheIcon[src];
+                    cache = await image2Base64(target);
+                    if (cache == 'data:,' || !cache) cache = 'fail';
+                    cacheIcon[src] = cache;
+                    storage.setItem("cacheIcon", cacheIcon);
+                }
+            } else {
+                await cacheFontIcon(target);
+            }
             await new Promise((resolve) => {
                 setTimeout(() => {
                     resolve(true);
                 }, 1);
             });
-            if (!searchData.prefConfig.cacheSwitch) return;
-            if (target.nodeName.toUpperCase() == 'IMG') {
-                let src = target.src || target.dataset.src;
-                if (src) {
-                    if (cacheIcon[src]) return;
-                    let cache = await imageSrc2Base64(src);
-                    if (cache == 'data:,' || !cache) cache = 'fail';
-                    cacheIcon[src] = cache;
-                    storage.setItem("cacheIcon", cacheIcon);
-                    debug(src + " cached, left " + cachePool.length + " icons");
-                }
-            } else {
-                cacheFontIcon(target);
+            return cache;
+        }
+
+        async function cachePoolAction() {
+            while (cachePool.length > 0) {
+                await cacheAction(cachePool.shift());
             }
         }
 
         async function cacheImgManager(noti) {
             if (searchData.prefConfig.cacheSwitch) {
                 let needCache = cachePool.length > 0;
-                while (cachePool.length > 0) {
-                    await cacheAction(cachePool.shift());
-                }
+                await Promise.all([cachePoolAction(), cachePoolAction(), cachePoolAction(), cachePoolAction(), cachePoolAction()]);
                 if (needCache) {
                     if (noti) _GM_notification(i18n("cacheOver"));
                     debug(i18n("cacheOver"));
@@ -11925,10 +14718,12 @@
         }
 
         async function cacheFontManager(noti) {
-            if (searchData.prefConfig.cacheSwitch && !isAllPage) {
+            if (!isAllPage && (!ext || searchData.prefConfig.cacheSwitch)) {
                 searchBar.con.classList.add("in-input");
                 searchBar.con.style.visibility = "hidden";
+                searchBar.con.style.display = "";
                 searchBar.appendBar();
+                await sleep(2000);
                 let needCache = cacheFontPool.length > 0;
                 while (cacheFontPool.length > 0) {
                     await cacheAction(cacheFontPool.shift());
@@ -11940,9 +14735,89 @@
             }
         }
 
+        function captureStartupSelection() {
+            const controller = new AbortController();
+            const options = {capture: true, signal: controller.signal};
+            let start, pending, timer, ready = false;
+            const cancel = () => {
+                controller.abort();
+                clearTimeout(timer);
+                start = pending = null;
+            };
+            const reset = () => {
+                start = pending = null;
+                if (ready) cancel();
+            };
+            const flush = () => {
+                if (!ready || start) return;
+                const saved = pending;
+                cancel();
+                if (!saved || !saved.text || document.hidden || !saved.target.isConnected ||
+                    !saved.event.target.isConnected || searchBar.contains(saved.target) ||
+                    /^pv-/.test(saved.event.target.className) || getSelectStr() !== saved.text) return;
+                const selection = window.getSelection();
+                if (['anchorNode', 'anchorOffset', 'focusNode', 'focusOffset'].some(key => selection[key] !== saved[key])) return;
+                const targetInput = inputActive(document) || isInput(saved.event.target);
+                if (!searchData.prefConfig.enableInInput && targetInput) return;
+                targetElement = saved.target;
+                if (searchData.prefConfig.minPopup == 2) searchBar.con.classList.toggle('targetInput', targetInput);
+                searchBar.showInPage(true, saved.event);
+            };
+            document.addEventListener('mousedown', e => {
+                if (!e.isTrusted) return;
+                if (ready) return cancel();
+                pending = null;
+                start = e.button === 0 ? {event: e, moved: false} : null;
+            }, options);
+            document.addEventListener('mousemove', e => {
+                if (start && Math.abs(start.event.clientX - e.clientX) + Math.abs(start.event.clientY - e.clientY) > 2) {
+                    start.moved = true;
+                }
+            }, options);
+            document.addEventListener('mouseup', e => {
+                if (!e.isTrusted || !start || e.button !== 0) return;
+                if (start.moved || e.detail > 1) {
+                    const selection = window.getSelection();
+                    pending = {event: e, target: start.event.target, text: getSelectStr(),
+                        anchorNode: selection.anchorNode, anchorOffset: selection.anchorOffset,
+                        focusNode: selection.focusNode, focusOffset: selection.focusOffset};
+                }
+                start = null;
+                if (ready) timer = setTimeout(flush, 0);
+            }, options);
+            // A double click handled by the normal listener supersedes the pending mouseup.
+            document.addEventListener('dblclick', () => { if (ready) cancel(); }, options);
+            for (const type of ['keydown', 'dragstart', 'pointercancel']) document.addEventListener(type, reset, options);
+            window.addEventListener('blur', reset, options);
+            document.addEventListener('visibilitychange', () => { if (document.hidden) reset(); }, options);
+            return {cancel, resume() {
+                if (controller.signal.aborted) return;
+                ready = true;
+                if (!searchData.prefConfig.enableInPage || !searchData.prefConfig.selectToShow || isInConfigPage || isAllPage) {
+                    cancel();
+                    return;
+                }
+                flush();
+            }};
+        }
+
         function getSelectStr() {
             let selStr = extSelectionText || picker.getPickerStr() || window.getSelection().toString();
-            extSelectionText = "";
+            setTimeout(() => {
+                extSelectionText = "";
+            }, 1);
+            if (!selStr) {
+                let temp = window.getSelection();
+                if (temp && temp.rangeCount) {
+                    temp = temp.getRangeAt(0);
+                    if (temp) {
+                        temp = temp.cloneContents();
+                        if (temp) {
+                            selStr = temp.textContent;
+                        }
+                    }
+                }
+            }
             if (!selStr) {
                 let tar = getActiveElement(document);
                 if (tar && /^(TEXTAREA|INPUT)$/i.test(tar.nodeName)) {
@@ -11958,10 +14833,31 @@
                 }
             } else {
                 if (targetElement && targetElement.className === "searchJumper" && /^MARK$/i.test(targetElement.nodeName)) {
-                    return targetElement.innerText;
+                    return targetElement.dataset.matched || targetElement.innerText;
                 }
             }
             return "";
+        }
+
+        function keyToReg(key, sign, more) {
+            if (!more) {
+                if (/\w$/.test(key)) {
+                    more = '(\\b|$)';
+                } else more = '';
+            }
+            return new RegExp(key.replace(/([\*\.\?\+\$\^\[\]\(\)\{\}\|\\\/])/g, "\\$1") + more, sign);
+        }
+
+        function replaceSingle(str, key, value, after) {
+            if (str.indexOf(key + ".replace(/") !== -1) {
+                let replaceMatch = str.match(keyToReg(key, "", "\\.replace\\(/(.*?[^\\\\])/([gimsuyx]*),\\s*[\"'](.*?[^\\\\])??[\"']\\)"));
+                if (!replaceMatch) return str.replace(keyToReg(key, "g"), (after ? after(value) : value));
+                value = value.replace(new RegExp(replaceMatch[1], replaceMatch[2]), replaceMatch[3] || '');
+                str = str.replace(replaceMatch[0], key);
+                return replaceSingle(str, key, value, after);
+            } else {
+                return str.replace(keyToReg(key, "g"), (after ? after(value.replace(/\$/g, "$$$$")) : value.replace(/\$/g, "$$$$")));
+            }
         }
 
         function getKeywords() {
@@ -11973,68 +14869,83 @@
             //if (localKeywords === '' && cacheKeywords) return cacheKeywords;
 
             let keywordsMatch, keywords = '', isUtf8 = !currentSite.charset || currentSite.charset == 'UTF-8';
-            if (currentSite.keywords) {
-                if (isUtf8) {
-                    if (/^[\w\|]+$/.test(currentSite.keywords)) {
-                        let keywordsList = currentSite.keywords.split("|");
-                        let urlParams = new URLSearchParams(location.search);
-                        for (let i = 0; i < keywordsList.length; i++) {
-                            keywords = urlParams.get(keywordsList[i]);
-                            if (keywords) break;
-                        }
-                    } else if (/\(.+\)/.test(currentSite.keywords)) {
-                        try {
-                            keywordsMatch = location.href.match(new RegExp(currentSite.keywords));
-                            if (keywordsMatch) {
-                                keywords = keywordsMatch[1];
+            try {
+                if (currentSite.keywords) {
+                    let rules = currentSite.keywords.split("\n");
+                    for (let i = 0; i < rules.length; i++) {
+                        let rule = rules[i];
+                        if (!rule || !rule.trim()) continue;
+                        let ruleMatch = rules[i].match(/^(.*?)\.replace\(\//);
+                        if (ruleMatch) rule = ruleMatch[1];
+                        if (isUtf8) {
+                            if (/^\w[\w\|]*$/.test(rule)) {
+                                let keywordsList = rule.split("|");
+                                let urlParams = new URLSearchParams(location.search);
+                                for (let i = 0; i < keywordsList.length; i++) {
+                                    keywords = urlParams.get(keywordsList[i]);
+                                    if (keywords) break;
+                                }
+                            } else if (/\(.+\)/.test(rule) && rule.indexOf("@") !== 0) {
+                                try {
+                                    keywordsMatch = href.match(new RegExp(rule));
+                                    if (keywordsMatch) {
+                                        keywords = keywordsMatch[1];
+                                    }
+                                    if (keywords) {
+                                        keywords = decodeURIComponent(keywords);
+                                    }
+                                } catch (e) {
+                                    keywords = '';
+                                }
                             }
-                            if (keywords) {
-                                keywords = decodeURIComponent(keywords);
-                            }
-                        } catch (e) {
-                            keywords = '';
                         }
-                    }
-                }
-                if (!keywords && getBody(document)) {
-                    try {
-                        let targetEle = getElement(currentSite.keywords);
-                        if (targetEle) {
-                            keywords = targetEle.value || targetEle.innerText;
-                        }
-                    } catch (e) {
-                        keywords = '';
-                    }
-                }
-            } else if (isUtf8 && wordParamReg.test(currentSite.url) && !/[#:%]p{/.test(currentSite.url)) {
-                if (location.href.indexOf("?") != -1) {
-                    keywordsMatch = currentSite.url.match(new RegExp(`[\\?&]([^&]*?)=${wordParam}.*`));
-                    if (keywordsMatch) {
-                        keywords = new URLSearchParams(location.search).get(keywordsMatch[1]);
-                    }
-                }
-                if (!keywords) {
-                    keywordsMatch = currentSite.url.match(new RegExp(`https?://[^/]*/(.*)${wordParam}`));
-                    if (keywordsMatch) {
-                        keywordsMatch = location.href.match(new RegExp((keywordsMatch[1] || (location.host.replace(/\./g, "\\.") + "/")) + "(.*?)(\/|$)"));
-                        if (keywordsMatch) {
-                            keywords = keywordsMatch[1];
-                        }
-                        if (keywords) {
+                        if (!keywords && getBody(document)) {
                             try {
-                                keywords = decodeURIComponent(keywords);
+                                let targetEle = getElement(rule);
+                                if (targetEle) {
+                                    keywords = targetEle.value || targetEle.innerText;
+                                }
                             } catch (e) {
                                 keywords = '';
                             }
                         }
+                        if (keywords && ruleMatch) {
+                            keywords = replaceSingle(rules[i], rule, keywords);
+                        }
+                        if (keywords) break;
+                    }
+                } else if (isUtf8 && wordParamReg.test(currentSite.url) && !/[#:%]p{/.test(currentSite.url)) {
+                    if (href.indexOf("?") != -1) {
+                        keywordsMatch = currentSite.url.match(new RegExp(`[\\?&]([^&]*?)=${wordParam}.*`));
+                        if (keywordsMatch) {
+                            keywords = new URLSearchParams(location.search).get(keywordsMatch[1]);
+                        }
+                    }
+                    if (!keywords) {
+                        keywordsMatch = currentSite.url.match(new RegExp(`https?://[^/]*/(.*)${wordParam}`));
+                        if (keywordsMatch) {
+                            keywordsMatch = href.match(new RegExp((keywordsMatch[1].replace(/\?/g, "\\?") || (location.host.replace(/\./g, "\\.") + "/")) + "(.*?)(\/|$)"));
+                            if (keywordsMatch) {
+                                keywords = keywordsMatch[1];
+                            }
+                            if (keywords) {
+                                try {
+                                    keywords = decodeURIComponent(keywords);
+                                } catch (e) {
+                                    keywords = '';
+                                }
+                            }
+                        }
                     }
                 }
+                if (keywords == '' && getBody(document)) {
+                    let firstInput = getBody(document).querySelector('input[type=text]:not([readonly]),input:not([type])');
+                    if (firstInput) keywords = firstInput.value;
+                }
+                if (keywords) localKeywords = keywords;
+            } catch(e) {
+                debug(e);
             }
-            if (keywords == '' && getBody(document)) {
-                let firstInput = getBody(document).querySelector('input[type=text]:not([readonly]),input:not([type])');
-                if (firstInput) keywords = firstInput.value;
-            }
-            if (keywords) localKeywords = keywords;
             return localKeywords || "";//!localKeywords ? cacheKeywords : localKeywords;
         }
 
@@ -12071,7 +14982,7 @@
         let extSelectionText = "";
         function initListener() {
             _GM_registerMenuCommand(i18n('settings'), () => {
-                _GM_openInTab(configPage, {active: true});
+                _GM_openInTab(configPage, {active: true, insert: true});
             });
             _GM_registerMenuCommand(i18n('searchInPage'), () => {
                 searchBar.showInPage();
@@ -12086,31 +14997,38 @@
                     showSiteAddFromOpenSearch(openSearch.href, (type, e) => {
                         if (type != 'load') {
                             if (e) debug(e.statusText || e.error || e.response || e);
-                            let firstInput = getBody(document).querySelector('input[type=text]:not([readonly]),input[type=search]:not([readonly]),input:not([type])');
+                            let firstInput = getBody(document).querySelector('input[type=text]:not([readonly]),input[type=search]:not([readonly]),input:not([type])') ||
+                                getBody(document).querySelector('textarea');
                             quickAddByInput(firstInput);
                         }
                     });
                 } else {
-                    let firstInput = getBody(document).querySelector('input[type=text]:not([readonly]),input[type=search]:not([readonly]),input:not([type])');
+                    let firstInput = getBody(document).querySelector('input[type=text]:not([readonly]),input[type=search]:not([readonly]),input:not([type])') ||
+                        getBody(document).querySelector('textarea');
                     quickAddByInput(firstInput);
                 }
             });
             if (ext) {
                 chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
                     if (request.selectionText) extSelectionText = request.selectionText;
+                    let validCommand = false;
                     switch (request.command) {
                         case "settings":
-                            _GM_openInTab(configPage, {active: true});
+                            validCommand = true;
+                            _GM_openInTab(configPage, {active: true, insert: true});
                             break;
                         case "searchInPage":
+                            validCommand = true;
                             searchBar.showInPage();
                             searchBar.showInPageSearch();
                             break;
                         case "filterSearch":
+                            validCommand = true;
                             searchBar.showInPage();
                             searchBar.showFilterSearch();
                             break;
                         case "search":
+                            validCommand = true;
                             if (request.name) {
                                 searchBar.searchBySiteName(request.name, request.key || {});
                             } else {
@@ -12118,30 +15036,40 @@
                             }
                             break;
                         case "searchAll":
+                            validCommand = true;
                             if (request.name) {
                                 searchBar.searcAllhByTypeName(request.name);
                             }
                             break;
                         case "toggle":
+                            validCommand = true;
                             location.reload();
                             break;
+                        case "streamUpdate":
+                            validCommand = true;
+                            searchBar.streamUpdate(request.detail);
+                            break;
                         case "showAll":
+                            validCommand = true;
                             searchBar.toggleShowAll();
                             break;
                         case "addSearchEngine":
                             {
+                                validCommand = true;
                                 if (shareEngines) return;
                                 let openSearch = document.head.querySelector('[rel="search"]');
                                 if (openSearch) {
                                     showSiteAddFromOpenSearch(openSearch.href, (type, e) => {
                                         if (type != 'load') {
                                             if (e) debug(e.statusText || e.error || e.response || e);
-                                            let firstInput = getBody(document).querySelector('input[type=text]:not([readonly]),input[type=search]:not([readonly]),input:not([type])');
+                                            let firstInput = getBody(document).querySelector('input[type=text]:not([readonly]),input[type=search]:not([readonly]),input:not([type])') ||
+                                                getBody(document).querySelector('textarea');
                                             quickAddByInput(firstInput);
                                         }
                                     });
                                 } else {
-                                    let firstInput = getBody(document).querySelector('input[type=text]:not([readonly]),input[type=search]:not([readonly]),input:not([type])');
+                                    let firstInput = getBody(document).querySelector('input[type=text]:not([readonly]),input[type=search]:not([readonly]),input:not([type])') ||
+                                        getBody(document).querySelector('textarea');
                                     quickAddByInput(firstInput);
                                 }
                             }
@@ -12149,11 +15077,17 @@
                         default:
                             break;
                     }
+                    if (validCommand) {
+                        sendResponse({ msg: "ok" });
+                    }
                 });
             }
             document.addEventListener('searchJumper', e => {
                 switch (e.detail.action) {
                     case "search":
+                        if (e.detail.query) {
+                            extSelectionText = e.detail.query;
+                        }
                         if (e.detail.name) {
                             searchBar.searchBySiteName(e.detail.name, e.detail.key || {});
                         } else {
@@ -12224,15 +15158,7 @@
                     }
                 }
                 logoSvg.style.cursor = "";
-                let firstType = searchBar.bar.querySelector('.search-jumper-type.search-jumper-open>span');
-                if (firstType) {
-                    if (firstType.onmousedown) {
-                        firstType.onmousedown();
-                    } else {
-                        let mouseEvent = new PointerEvent("mousedown");
-                        firstType.dispatchEvent(mouseEvent);
-                    }
-                }
+                searchBar.closeOpenType();
                 searchBar.initPos(relX, relY, posX, posY);
                 storage.setItem("searchData", searchData);
             };
@@ -12283,7 +15209,7 @@
                 e.preventDefault();
                 e.stopPropagation();
                 if (searchBar.inInput || e.button === 1 || e.altKey || e.ctrlKey || e.shiftKey || e.metaKey) {
-                    _GM_openInTab(configPage, {active: true});
+                    _GM_openInTab(configPage, {active: true, insert: true});
                     return;
                 }
                 grabState = 1;
@@ -12315,12 +15241,17 @@
                 }, 100);
                 hideTimer = setTimeout(() => {
                     searchBar.bar.style.display = 'none';
+                    if (searchData.prefConfig.resizePage) {
+                        if (typeof searchBar.initBodyStyle != "undefined") getBody(document).style.cssText = searchBar.initBodyStyle;
+                        searchBar.con.classList.remove("resizePage");
+                    }
                     document.removeEventListener('touchend', mouseUpHandler, false);
                     document.removeEventListener('touchmove', mouseMoveHandler, false);
-                }, 2000);
+                }, 1500);
             }, { passive: false, capture: false });
 
             searchBar.bar.addEventListener(getSupportWheelEventName(), e => {
+                e.stopPropagation();
                 if (e.target.parentNode && (e.target.parentNode.className == "sitelistCon" ||
                                             (e.target.parentNode.parentNode && e.target.parentNode.parentNode.className == "sitelistCon"))) return;
                 let targetClassList = searchBar.con.classList;
@@ -12351,15 +15282,15 @@
                     deltaY = e.deltaY;
                 }
                 e.preventDefault();
-                e.stopPropagation();
 
                 searchBar.con.scrollLeft += deltaY;
             }, { passive: false, capture: false });
 
-            if (searchData.prefConfig.switchSitesPreKey ||
-                searchData.prefConfig.switchSitesNextKey ||
-                searchData.prefConfig.shortcutKey ||
-                searchData.prefConfig.showAllShortcutKey) {
+            if (searchData.prefConfig.shortcut &&
+                (searchData.prefConfig.switchSitesPreKey ||
+                 searchData.prefConfig.switchSitesNextKey ||
+                 searchData.prefConfig.shortcutKey ||
+                 searchData.prefConfig.showAllShortcutKey)) {
                 let inputing = -1, key = false;
                 let checkShortcutEnable = (e, _alt, _ctrl, _shift, _meta, _key) => {
                     if ((_alt && !e.altKey) ||
@@ -12381,6 +15312,11 @@
                     e.stopPropagation();
                     return true;
                 };
+                document.addEventListener('mouseenter', e => {
+                    if (e.target && !searchBar.contains(e.target)) {
+                        hoverElement = e.target;
+                    }
+                }, true);
                 document.addEventListener('keydown', e => {
                     if (e.target.id === "searchJumperInput") return;
                     inputing = -1;
@@ -12420,6 +15356,7 @@
             if (searchData.prefConfig.enableInPage) {
                 let shown = false;
                 let showToolbarTimer;
+                let tripleClick = false;
 
                 let clientRect;
                 document.addEventListener('selectionchange', (e) => {
@@ -12481,7 +15418,7 @@
                             setTimeout(() => {
                                 if (getSelectStr()) {
                                     searchBar.showInPage(true, e);
-                                } else searchBar.waitForHide(1);
+                                } else searchBar.waitForHide(0);
                             }, 0);
                         }
                         return;
@@ -12492,6 +15429,7 @@
                     }, 500);
                     shown = false;
                     targetElement = e.target;
+                    searchBar.closePopupWindow();
                     let matchKey = false;
                     if ((searchData.prefConfig.altKey ||
                          searchData.prefConfig.ctrlKey ||
@@ -12505,7 +15443,7 @@
                     }
                     if (!searchData.prefConfig.selectToShow) {
                         if ((e.button === 0 && !searchData.prefConfig.leftMouse) || (e.button === 1 && !searchData.prefConfig.middleMouse)) {
-                            searchBar.waitForHide(1);
+                            searchBar.waitForHide(0);
                             return;
                         }
                     }
@@ -12532,16 +15470,17 @@
                         } else {
                             setTimeout(() => {
                                 if (shown) return;
+                                if (/^pv-/.test(e.target.className)) return;
                                 targetInput = isTargetInput(e.target);
                                 inputSign = !searchData.prefConfig.enableInInput && targetInput;
                                 if (!inputSign && (
                                     (matchKey && e.button === 2) ||
-                                    (moved && e.button === 0 && searchData.prefConfig.selectToShow && getSelectStr())
+                                    ((moved || tripleClick) && e.button === 0 && searchData.prefConfig.selectToShow && getSelectStr())
                                 )) {
                                     searchBar.showInPage(true, e);
                                 } else {
                                     waitForMouse = false;
-                                    searchBar.waitForHide(1);
+                                    searchBar.waitForHide(0);
                                 }
                             }, 0);
                         }
@@ -12560,6 +15499,11 @@
                             clearTimeout(showToolbarTimer);
                             setTimeout(() => {//wait for triple click
                                 searchBar.showInPage(true, e);
+                            }, 200);
+                        } else {
+                            tripleClick = true;
+                            setTimeout(() => {
+                                tripleClick = false;
                             }, 200);
                         }
                         return;
@@ -12628,8 +15572,8 @@
                     document.addEventListener('mouseup', inpageMouseUpHandler, true);
                     e.target.addEventListener('scroll', scrollHandler);
                 };
-                document.addEventListener('mousedown', mouseDownHandler);
-                document.addEventListener('dblclick', mouseDownHandler);
+                document.addEventListener('mousedown', mouseDownHandler, true);
+                document.addEventListener('dblclick', mouseDownHandler, true);
                 if (searchData.prefConfig.selectToShow) {
                     let touchTimer, touchstartEvent;
                     let selectionchange = e => {
@@ -12642,6 +15586,7 @@
                         }, 300);
                     };
                     document.addEventListener('touchstart', e => {
+                        if (e.isTrusted === false) return;
                         touchstartEvent = e;
                         document.addEventListener('selectionchange', selectionchange);
                     });
@@ -12664,15 +15609,39 @@
                         return;
                     }
                     targetElement = e.target;
-                    if (targetElement.shadowRoot) return;
-                    if (targetElement.getAttribute && targetElement.getAttribute("draggable") == "true") return;
-                    if (targetElement.parentNode && targetElement.parentNode.getAttribute && targetElement.parentNode.getAttribute("draggable") == "true") return;
-                    searchBar.waitForHide(1);
-                    setTimeout(() => {
-                        showDragSearch(e.clientX, e.clientY);
-                    }, 2);
-                    if (clickHandler) document.removeEventListener('click', clickHandler, true);
-                    draging = true;
+                    if (targetElement.nodeType !== 1) targetElement = targetElement.parentNode;
+                    if (targetElement.shadowRoot) {
+                        targetElement = targetElement.shadowRoot.activeElement || targetElement;
+                    }
+                    const draggableElement = targetElement.closest('[draggable="true"]');
+                    if (!e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey &&
+                        !/^(auto|default|pointer)$/.test(getComputedStyle(targetElement).cursor)) return;
+                    if (draggableElement && draggableElement.nodeName !== 'A') return;
+                    const startDrag = event => {
+                        searchBar.funcKeyCall = true;
+                        searchBar.waitForHide(0);
+                        setTimeout(() => {
+                            showDragSearch(event.clientX, event.clientY);
+                        }, 2);
+                        if (clickHandler) document.removeEventListener('click', clickHandler, true);
+                        draging = true;
+                    };
+                    if (draggableElement) {
+                        // Leave short link drags to the page; open the dial after 100px.
+                        const controller = new AbortController();
+                        const options = {capture: true, signal: controller.signal};
+                        const cancel = () => controller.abort();
+                        document.addEventListener('dragend', cancel, options);
+                        document.addEventListener('drop', cancel, options);
+                        document.addEventListener('dragstart', cancel, options);
+                        document.addEventListener('dragover', move => {
+                            if (Math.hypot(move.clientX - e.clientX, move.clientY - e.clientY) <= 100) return;
+                            cancel();
+                            startDrag(move);
+                        }, options);
+                    } else {
+                        startDrag(e);
+                    }
                 });
             }
             if (searchData.prefConfig.quickAddRule) {
@@ -12683,8 +15652,9 @@
                     quickAddByInput(e.target);
                 }, true);
             }
-            let changeHandler = e => {
-                setTimeout(() => {
+            let changeTimer, changeHandler = e => {
+                clearTimeout(changeTimer);
+                changeTimer = setTimeout(() => {
                     searchBar.refresh();
                 }, 100);
             }
@@ -12704,23 +15674,25 @@
                 if (currentSite && _t) {
                     if (_t.nodeName && _t.nodeName.toLowerCase && _t.nodeName.toLowerCase() == 'a') {
                         searchBar.updateCacheKeywords();
+                        storage.setItem("clickLink", _t.href);
                     } else {
                         let _tp = _t.parentNode;
                         if (_tp && _tp.nodeName && _tp.nodeName.toLowerCase && _tp.nodeName.toLowerCase() == 'a') {
                             searchBar.updateCacheKeywords();
+                            storage.setItem("clickLink", _t.href);
                         }
                     }
                 }
             };
             getBody(document).addEventListener("auxclick", clickAHandler, true);
             getBody(document).addEventListener("click", clickAHandler, true);
-            let href = location.href;
             let _wr = function(type) {
                 var orig = history[type];
                 return function() {
                     var rv = orig.apply(this, arguments);
-                    if (href != location.href) {
-                        href = location.href;
+                    let _href = location.href.slice(0, 500);
+                    if (href != _href) {
+                        href = _href;
                         var e = new Event('sj_' + type);
                         e.arguments = arguments;
                         window.dispatchEvent(e);
@@ -12728,10 +15700,11 @@
                     return rv;
                 };
             };
-            history.pushState = _wr('pushState');
-            history.replaceState = _wr('replaceState');
+            //history.pushState = _wr('pushState');
+            //history.replaceState = _wr('replaceState');
             window.addEventListener('sj_pushState', changeHandler);
             window.addEventListener('sj_replaceState', changeHandler);
+
             window.addEventListener('yt-navigate-finish', changeHandler);
             window.addEventListener("securitypolicyviolation", (e) => {
                 if (e.violatedDirective === 'form-action') {
@@ -12758,6 +15731,7 @@
             });
             headObserver.observe(document.head, headObserverOptions);*/
 
+            let lastUrl = window.location.href;
             let removeMark = node => searchBar.removeMark(node);
             let highlight = (words, node) => searchBar.highlight(words, node);
             let appendBar = () => searchBar.appendBar();
@@ -12768,15 +15742,32 @@
             };
             let highlightTimes = 0;
             let bodyObserver = new MutationObserver((mutationsList, observer) => {
+                const hasRelevantMutation = mutationsList.some(mutation => mutation.type === 'childList' || mutation.type === 'attributes');
+                if (hasRelevantMutation) {
+                    const currentUrl = window.location.href;
+                    if (currentUrl !== lastUrl) {
+                        lastUrl = currentUrl;
+                        changeHandler();
+                        searchBar.checkDiscussions();
+                    }
+                }
                 let lockWords = searchBar.lockWords;
                 if (lockWords) {
                     if (searchBar.initHighlight && highlightTimes > 100) return;
                     for (let mutation of mutationsList) {
                         if (mutation.type === "characterData") {
                             let parentNode = mutation.target.parentNode;
-                            if (!parentNode ||
-                                (mutation.target.previousElementSibling && mutation.target.previousElementSibling.className === "searchJumper") ||
-                                (mutation.target.nextElementSibling && mutation.target.nextElementSibling.className === "searchJumper")) {
+                            if (!parentNode) {
+                                return;
+                            }
+                            let sibling = mutation.target.previousElementSibling;
+                            if (sibling && !sibling.dataset.inited && sibling.className === "searchJumper") {
+                                sibling.dataset.inited = true;
+                                return;
+                            }
+                            sibling = mutation.target.nextElementSibling;
+                            if (sibling && !sibling.dataset.inited && sibling.className === "searchJumper") {
+                                sibling.dataset.inited = true;
                                 return;
                             }
                             searchBar.checkCharacterData(parentNode);
@@ -12795,15 +15786,28 @@
                             });
                         }
                         if (mutation.addedNodes.length) {
-                            [].forEach.call(mutation.addedNodes, addedNode => {
-                                let target = addedNode.nodeType === 1 ? addedNode : mutation.target;
-                                if (!target.className || !/searchJumper/.test(target.className)) {
+                            for (let i = 0; i < mutation.addedNodes.length; i++) {
+                                let addedNode = mutation.addedNodes[i], target;
+                                if (addedNode.nodeType === 1) {
+                                    if (/^searchJumper$/.test(addedNode.className)) {
+                                        continue;
+                                    }
+                                    target = addedNode;
+                                } else {
+                                    if (addedNode.previousElementSibling && /^searchJumper$/.test(addedNode.previousElementSibling.className)) {
+                                        continue;
+                                    } else if (addedNode.nextElementSibling && /^searchJumper$/.test(addedNode.nextElementSibling.className)) {
+                                        continue;
+                                    }
+                                    target = addedNode.parentNode;
+                                }
+                                if (target) {
                                     setTimeout(() => {
-                                        highlight("insert", target)
+                                        highlight("insert", target);
                                     }, 0);
                                     searchBar.initHighlight && highlightTimes++;
                                 }
-                            });
+                            }
                         }
                     }
                     appendBar();
@@ -12834,6 +15838,7 @@
             var root_page = /^[^\?#]*\//.exec(url)[0],
                 root_domain = /^\w+\:\/\/\/?[^\/]+/.exec(root_page)[0],
                 absolute_regex = /^\w+\:\/\//;
+            src = src.replace(/^\/(\.\.\/)+/, "/");
             while (src.indexOf("../") === 0) {
                 src = src.substr(3);
                 root_page = root_page.replace(/\/[^\/]+\/$/, "/");
@@ -12883,7 +15888,9 @@
                 }
                 if (parentForm.method.toLowerCase() == "post") {
                     url += "%p{" + params.join("&") + "}";
-                    if (parentForm.action.indexOf(location.origin) == 0 && location.pathname && location.pathname !== "/") url += `#from{${location.pathname.slice(1)}}`;
+                    if (!ext) {
+                        if (parentForm.action.indexOf(location.origin) == 0 && location.pathname && location.pathname !== "/") url += `#from{${location.pathname.slice(1)}}`;
+                    }
                 } else {
                     let existParams = url.match(/\?(.*)/);
                     if (existParams) {
@@ -12926,19 +15933,24 @@
             showSiteAdd(document.title.replace(input ? input.value : "", "").replace(/^\s*[-_]\s*/, ""), "", url, icons, document.characterSet);
         }
 
-        const jumpHtml = "https://hoothin.github.io/SearchJumper/jump.html";
+        const jumpHtml = ext ? chrome.runtime.getURL('config/jump.html') : "https://hoothin.github.io/SearchJumper/jump.html";
         function jumpBySearchJumper() {
+            if (!currentFormParams || !currentFormParams.url) return;
             let jumpTo = `${jumpHtml}#jump{url=${encodeURIComponent(currentFormParams.url)}&charset=${currentFormParams.charset}}`;
             if (currentFormParams.target == '_self') {
-                location.href = jumpTo;
+                if (ext) {
+                    _GM_openInTab(jumpTo, {active: true, insert: true, close: true});
+                } else {
+                    location.href = jumpTo;
+                }
             } else {
-                _GM_openInTab(jumpTo, {active: true});
+                _GM_openInTab(jumpTo, {active: true, insert: true});
             }
         }
 
         function preAction() {
-            if (location.href.indexOf(jumpHtml) != -1) {
-                let submitParams = location.href.match(/#jump{url=(.*)&charset=(.*)}/);
+            if (href.indexOf(jumpHtml) != -1) {
+                let submitParams = href.match(/#jump{url=(.*)&charset=(.*)}/);
                 if (submitParams) {
                     submitByForm(submitParams[2], decodeURIComponent(submitParams[1]), '_self');
                 }
@@ -12947,7 +15959,7 @@
 
         var shareEngines;
         async function checkConfigPage() {
-            if (location.href.indexOf(configPage) === 0 || ((document.title === "SearchJumper" || document.querySelector('[name="from"][content="SearchJumper"]')) && document.querySelector('[name="author"][content="Hoothin"]'))) {
+            if (href.indexOf(configPage) === 0 || ((document.title === "SearchJumper" || document.querySelector('[name="from"][content="SearchJumper"]')) && document.querySelector('[name="author"][content="Hoothin"]'))) {
                 shareEngines = document.querySelector('[name="engines"]');
                 let spotlight = document.getElementById("spotlight");
                 if (shareEngines) {
@@ -13003,7 +16015,10 @@
                         shareEngines = false;
                     }
                 }
-                isAllPage = !!shareEngines || /all(\.html)?$/.test(location.pathname);
+                let trustSite = href.indexOf(configPage.replace(/\/config.*/, "")) === 0 || href.indexOf(homePage) === 0 || href.indexOf(githubPage) === 0 || location.hostname === "localhost";
+                if (trustSite) {
+                    isAllPage = !!shareEngines || /all(\.html)?$/.test(location.pathname);
+                }
                 if (spotlight) {
                     spotlight.style.display = "none";
                 } else {
@@ -13014,14 +16029,23 @@
                         }
                     }, 500);
                 }
-                return true;
+                return trustSite;
             }
             return false;
         }
 
         async function initConfig() {
             isInConfigPage = await checkConfigPage();
+            if (!isInConfigPage && searchData.webdavConfig) {
+                webDAV = new WebDAV(searchData.webdavConfig.host + "/SearchJumper" + (searchData.webdavConfig.path || "").replace(/^\/*/, "/").replace(/\/*$/, "/"), searchData.webdavConfig.username, searchData.webdavConfig.password);
+            }
             if (isInConfigPage && !isAllPage) {
+                if (ext) {
+                    cacheIcon = await extensionApi.runtime.sendMessage({action: 'getIconCache'}) || {};
+                    chrome.storage.onChanged.addListener((changes, area) => {
+                        if (area === 'local' && changes.cacheIcon) cacheIcon = changes.cacheIcon.newValue || {};
+                    });
+                }
                 let sendMessageTimer, received = false;
                 let loadConfig = () => {
                     sendMessageTimer = setTimeout(() => {
@@ -13031,14 +16055,21 @@
                     }, 50);
                     window.postMessage({
                         searchData: searchData,
+                        cacheIcon: cacheIcon,
                         version: _GM_info.script.version || 0,
+                        splitEnabled,
                         command: 'loadConfig'
                     }, '*');
                 }
+                let delayTimeout = setTimeout(() => {
+                    if (received) return;
+                    location.reload();
+                }, 3000);
 
                 document.addEventListener('received', e => {
                     received = true;
                     clearTimeout(sendMessageTimer);
+                    clearTimeout(delayTimeout);
                     if (cachePool.length > 0 && searchData.prefConfig.cacheSwitch) {
                         debug(`Start cache ${cachePool.length} icons!`);
                         cacheImgManager();
@@ -13066,6 +16097,52 @@
                 });
 
                 loadConfig();
+                document.addEventListener('getAppearancePreview', async () => {
+                    try {
+                        await searchBar.ready;
+                        const tileGroup = searchBar.bar.querySelector('.search-jumper-targetAll:has(a.search-jumper-btn)') ||
+                            searchBar.bar.querySelector('.search-jumper-type:has(a.search-jumper-btn)');
+                        const createPreview = sidebar => {
+                            const preview = searchBar.con.cloneNode(false);
+                            preview.className = 'search-jumper-searchBarCon ' + (sidebar ? 'search-jumper-left resizePage' : 'funcKeyCall');
+                            preview.removeAttribute('style');
+                            const bar = searchBar.bar.cloneNode(false);
+                            bar.className = 'search-jumper-searchBar' + (sidebar ? ' initShow' : '');
+                            bar.removeAttribute('style');
+                            const groups = sidebar
+                                ? [...searchBar.bar.querySelectorAll(':scope > .search-jumper-logo, :scope > .search-jumper-type')].slice(0, 5)
+                                : [tileGroup].filter(Boolean);
+                            groups.forEach(source => {
+                                const group = source.cloneNode(true);
+                                group.removeAttribute('style');
+                                group.classList.remove('notmatch', 'input-hide', 'not-expand', 'search-jumper-open');
+                                if (sidebar) group.style.display = 'inline-flex';
+                                else group.classList.add('search-jumper-open');
+                                group.querySelectorAll('.sitelist, .searchJumperExpand').forEach(node => node.remove());
+                                [...group.querySelectorAll(':scope > a.search-jumper-btn')].slice(8).forEach(node => node.remove());
+                                group.querySelectorAll('a').forEach(node => {
+                                    node.removeAttribute('href');
+                                    node.removeAttribute('target');
+                                    node.classList.remove('notmatch', 'input-hide');
+                                    node.style.removeProperty('display');
+                                });
+                                // Settings previews already load under the extension's own origin.
+                                group.querySelectorAll('img[data-src]').forEach(img => { img.src = img.dataset.src; });
+                                bar.appendChild(group);
+                            });
+                            preview.appendChild(bar);
+                            return preview.outerHTML;
+                        };
+                        window.postMessage({
+                            command: 'appearancePreview',
+                            cssText: searchBar.appearanceCssText,
+                            html: createPreview(false),
+                            sidebarHtml: createPreview(true)
+                        }, '*');
+                    } catch (error) {
+                        window.postMessage({command: 'appearancePreview', error: error.message}, '*');
+                    }
+                });
                 document.addEventListener('dataChanged', e => {
                     loadConfig();
                 });
@@ -13137,7 +16214,8 @@
                                 if (typeCache) {
                                     if (typeCache === 'fail') {
                                         let img = document.createElement("img");
-                                        img.src = type.icon;
+                                        if (ext) img.dataset.src = type.icon;
+                                        else img.src = type.icon;
                                         cachePool.push(img);
                                     } else {
                                         newCache[type.icon] = typeCache;
@@ -13152,7 +16230,8 @@
                                     if (siteCache) {
                                         if (siteCache === 'fail') {
                                             let img = document.createElement("img");
-                                            img.src = icon;
+                                            if (ext) img.dataset.src = icon;
+                                            else img.src = icon;
                                             cachePool.push(img);
                                         } else {
                                             newCache[icon] = siteCache;
@@ -13161,6 +16240,7 @@
                                 }
                             });
                         });
+                        cacheIcon = newCache;
                         storage.setItem("cacheIcon", newCache);
                         if (searchData.prefConfig.cacheSwitch) {
                             if (cachePool.length > 0) {
@@ -13180,7 +16260,7 @@
                     _GM_setClipboard(JSON.stringify(copyTarget, null, 2));
                     _GM_notification('Configuration copied successfully!');
                 });
-            } else if (importPageReg.test(location.href)) {
+            } else if (importPageReg.test(href)) {
                 let importCss = _GM_addStyle(`
                     #import-btns-con {
                         position: absolute;
@@ -13358,7 +16438,7 @@
                 });
 
                 document.addEventListener("mouseover", e => {
-                    if (importPageReg.test(location.href)) {
+                    if (importPageReg.test(href)) {
                         if (e.target.nodeName === "PRE") {
                             bindPre(e.target);
                         } else {
@@ -13410,24 +16490,25 @@
                         width: 350px;
                         text-align: left;
                         background-color: #ffffff;
-                        border: 1px solid #afb3b6;
+                        border: 1px solid #282a2d1a;
                         border-radius: 10px;
-                        opacity: 0.95;
-                        filter: alpha(opacity=95);
-                        box-shadow: 5px 5px 20px 0px #000;
-                        color: #6e7070;
+                        opacity: 1;
+                        color-scheme: light dark;
+                        box-shadow: 0 12px 40px #20263133;
+                        color: #282a2d;
+                        font-family: Arial, "Microsoft YaHei", "Noto Sans SC", sans-serif;
                         transition: all 0.25s ease;
                         border: 0;
                         font-size: initial;
                     }
                     .searchJumperFrame-title {
-                        background: #458bd1!important;
+                        background: #357dc5!important;
                         display: flex!important;
                         align-items: center!important;
                         justify-content: center!important;
                         color: white!important;
                         font-weight: bold;
-                        font-size: 18px!important;
+                        font-size: 16px!important;
                         border-radius: 10px 10px 0 0!important;
                     }
                     .searchJumperFrame-title>img {
@@ -13443,14 +16524,15 @@
                     }
                     .searchJumperFrame-buttons>button {
                         width: 32%;
-                        font-size: 16px;
+                        font-size: 14px;
                         cursor: pointer;
                         border: 1px solid #1976d2;
-                        border-radius: 4px;
-                        transition: all .3s;
+                        border-radius: 8px;
+                        transition: background-color .15s, box-shadow .15s;
                         color: #fff;
-                        background-color: #458bd1;
+                        background-color: #357dc5;
                         line-height: 25px;
+                        min-height: 32px;
                         padding: 3px;
                     }
                     .searchJumperFrame-buttons>button:hover {
@@ -13469,6 +16551,7 @@
                     .searchJumperFrame-body>.sitesCon>details>summary>span,
                     .searchJumperFrame-body>.sitesCon>details>div>span {
                         line-height: 25px;
+                        min-height: 32px;
                         overflow: hidden;
                         text-overflow: ellipsis;
                         max-width: 180px;
@@ -13501,21 +16584,21 @@
                       .searchJumperFrame-inputs>textarea,
                       .searchJumperFrame-inputs>select,
                       .searchJumperFrame-body select {
-                        background-color: black;
-                        color: #d5d5d5;
+                        background-color: #1c2127;
+                        color: #d3d8df;
                       }
                       .searchJumperFrame-title,
                       .searchJumperFrame-buttons>button {
-                        background: #245d8f!important;
+                        background: #2a5c8d!important;
                       }
                     }
                 `;
                 this.filterCssEle = _GM_addStyle(this.filterCss);
                 this.filterFrame = document.createElement("div");
                 this.filterFrame.id = "searchJumperFilter";
-                this.filterFrame.innerHTML = createHTML(`
+                setHTML(this.filterFrame, `
                 <div class="searchJumperFrame-body">
-                    <a href="${configPage}" class="searchJumperFrame-title" target="_blank">
+                    <a href="${homePage}" class="searchJumperFrame-title" target="_blank">
                         <img onerror="this.style.display='none'" width="32px" height="32px" src="${logoBase64}" />${i18n("addSearchEngine")}
                     </a>
                     <div class="searchJumperFrame-buttons">
@@ -13571,7 +16654,7 @@
                                         typeData.sites.push(curData);
                                     } else {
                                         let typeIndex = self.searchType(otherType.value);
-                                        searchData.sitesConfig[typeIndex].sites.push(curData);;
+                                        searchData.sitesConfig[typeIndex].sites.push(curData);
                                     }
                                 }
                             });
@@ -13743,7 +16826,7 @@
                 this.typeDict = {};
                 if (!this.filterCssEle || !this.filterCssEle.parentNode) this.filterCssEle = _GM_addStyle(this.filterCss);
                 document.documentElement.appendChild(this.filterFrame);
-                this.sitesCon.innerHTML = createHTML('');
+                setHTML(this.sitesCon, '');
                 configData.forEach(type => {
                     self.anylizeType(type);
                 });
@@ -13769,9 +16852,9 @@
                 clearTimeout(openAllTimer);
                 if ((currentSite && !currentSite.hideNotMatch && !searchData.prefConfig.hideOnSearchEngine) || searchBar.con.classList.contains("resizePage")) {
                     if (preOpenType && !preOpenType.classList.contains('search-jumper-open')) {
-                        if (preOpenType.children[0].onmousedown) preOpenType.children[0].onmousedown();
+                        if (preOpenType.children[0].onmouseup) preOpenType.children[0].onmouseup();
                         else {
-                            let mouseEvent = new PointerEvent("mousedown");
+                            let mouseEvent = new PointerEvent("mouseup");
                             preOpenType.children[0].dispatchEvent(mouseEvent);
                         }
                     }
@@ -13899,7 +16982,7 @@
                       height: 55px;
                       font-size: 12px;
                       font-weight: bold;
-                      font-family: Arial, sans-serif;
+                      font-family: Arial, sans-serif,微软雅黑,"Noto Sans SC";
                       display: flex;
                       flex-direction: column;
                       align-items: center;
@@ -13949,7 +17032,7 @@
                 dragSiteHistorySpans = [];
                 dragRoundFrame = document.createElement("div");
                 dragRoundFrame.id = "searchJumperWrapper";
-                dragRoundFrame.innerHTML = createHTML(`
+                setHTML(dragRoundFrame, `
                 <div class="panel"></div>
                 <div class="dragLogo">${logoBtnSvg}</div>
                 `);
@@ -14043,11 +17126,11 @@
                         searchBar.setFuncKeyCall(false);
                         searchBar.showInPage();
                     } else if (dragSector) {
+                        removeFrame();
                         searchBar.searchBySiteName(dragSector.children[0].dataset.name, e);
                         dragSector.style.transform = `rotate(${dragSector.dataset.deg}deg)`;
                         dragSector.classList.remove("over");
                         dragSector = null;
-                        removeFrame();
                     }
                     e.preventDefault();
                 });
@@ -14072,7 +17155,7 @@
                 let result = null;
                 for (let i = targetIndex; i < siteBtns.length; i++) {
                     let btn = siteBtns[i];
-                    if (btn.style.display !== 'none' && !btn.dataset.showTips) {
+                    if (btn.style.display !== 'none') {
                         result = btn;
                         targetIndex = i + 1;
                         break;
@@ -14108,11 +17191,11 @@
                 let targetIcon = targetSite.querySelector("img");
                 if (targetIcon) {
                     let src = targetIcon.src || targetIcon.dataset.src;
-                    if (src) img.src = src;
+                    if (src) loadIcon(img, src);
                 }
             };
             dragSiteCurSpans.forEach((span, i) => {
-                span.innerHTML = createHTML();
+                setHTML(span, "");
                 let targetSite = getTargetSiteBtn();
                 if (!targetSite) {
                     span.parentNode.parentNode.style.filter = 'contrast(0.5)';
@@ -14122,6 +17205,25 @@
                 filldragSpan(span, targetSite);
             });
             let findIndex = 0;
+
+            let historySiteBtns;
+            if (firstType.classList.contains("search-jumper-needInPage")) {
+                historySiteBtns = searchBar.txtHistorySiteBtns;
+            } else if (firstType.classList.contains("search-jumper-targetImg")) {
+                historySiteBtns = searchBar.imgHistorySiteBtns;
+            } else if (firstType.classList.contains("search-jumper-targetAudio")) {
+                historySiteBtns = searchBar.audioHistorySiteBtns;
+            } else if (firstType.classList.contains("search-jumper-targetVideo")) {
+                historySiteBtns = searchBar.videoHistorySiteBtns;
+            } else if (firstType.classList.contains("search-jumper-targetLink") || firstType.classList.contains("search-jumper-targetPage")) {
+                historySiteBtns = searchBar.linkHistorySiteBtns;
+            }
+            if (historySiteBtns) {
+                historySiteBtns = historySiteBtns.concat(searchBar.historySiteBtns);
+                historySiteBtns = historySiteBtns.filter((value, index, self) => self.indexOf(value) === index);
+            } else {
+                historySiteBtns = searchBar.historySiteBtns;
+            }
             let getHistorySiteBtn = () => {
                 if (searchData.prefConfig.reuseDragHistory) {
                     return getTargetSiteBtn();
@@ -14129,8 +17231,8 @@
                     return false;
                 }
                 let result = null;
-                for (let i = findIndex; i < searchBar.historySiteBtns.length; i++) {
-                    let btn = searchBar.historySiteBtns[i];
+                for (let i = findIndex; i < historySiteBtns.length; i++) {
+                    let btn = historySiteBtns[i];
                     if (btn.style.display !== 'none') {
                         result = btn;
                         findIndex = i + 1;
@@ -14142,14 +17244,13 @@
             dragSiteHistorySpans.forEach((span, i) => {
                 let dragleaveEvent = new DragEvent("dragleave");
                 span.dispatchEvent(dragleaveEvent);
-                span.innerHTML = createHTML();
+                setHTML(span, "");
                 span.parentNode.parentNode.style.opacity = 0.6;
                 let targetSite = getHistorySiteBtn();
                 if (!targetSite) return;
                 let siteImg = targetSite.querySelector('img');
                 if (siteImg && siteImg.dataset.src) {
-                    siteImg.src = siteImg.dataset.src;
-                    delete siteImg.dataset.src;
+                    loadIcon(siteImg);
                 }
                 span.parentNode.parentNode.style.opacity = 1;
                 filldragSpan(span, targetSite);
@@ -14178,6 +17279,10 @@
 
         var addFrame, nameInput, descInput, urlInput, iconInput, iconShow, iconsCon, typeSelect, testBtn, cancelBtn, addBtn, siteKeywords, siteMatch, openSelect, crawlBtn;
         function showSiteAdd(name, description, url, icons, charset, kwFilter, match, hideNotMatch) {
+            self.kwFilter = kwFilter;
+            self.charset = charset;
+            self.hideNotMatch = hideNotMatch;
+            self.match = match;
             if (!addFrame) {
                 let addFrameCssText = `
                     .searchJumperFrame-body,
@@ -14192,24 +17297,25 @@
                         margin-left: -150px;
                         z-index: 100000;
                         background-color: #ffffff;
-                        border: 1px solid #afb3b6;
+                        border: 1px solid #282a2d1a;
                         border-radius: 10px;
-                        opacity: 0.95;
-                        filter: alpha(opacity=95);
-                        box-shadow: 5px 5px 20px 0px #000;
-                        color: #6e7070;
+                        opacity: 1;
+                        color-scheme: light dark;
+                        box-shadow: 0 12px 40px #20263133;
+                        color: #282a2d;
+                        font-family: Arial, "Microsoft YaHei", "Noto Sans SC", sans-serif;
                         transition: all 0.25s ease;
                         border: 0;
                         font-size: initial;
                     }
                     .searchJumperFrame-title {
-                        background: #458bd1!important;
+                        background: #357dc5!important;
                         display: flex!important;
                         align-items: center!important;
                         justify-content: center!important;
                         color: white!important;
                         font-weight: bold;
-                        font-size: 18px!important;
+                        font-size: 16px!important;
                         border-radius: 10px 10px 0 0!important;
                     }
                     .draging .searchJumperFrame-body,
@@ -14224,7 +17330,7 @@
                     }
                     .searchJumperFrame-input-title {
                         font-size: 9pt;
-                        font-family: Arial, sans-serif;
+                        font-family: Arial, sans-serif,微软雅黑,"Noto Sans SC";
                         display: inline-block;
                         background-color: white;
                         position: relative;
@@ -14240,8 +17346,8 @@
                         resize: both;
                         font-size: 11pt;
                         font-weight: normal;
-                        border-radius: 4px;
-                        border: 1px solid rgba(0, 0, 0, 0.23);
+                        border-radius: 8px;
+                        border: 1px solid #282a2d26;
                         margin: 4px;
                         font-family: inherit;
                         background-color: #FFF;
@@ -14264,20 +17370,21 @@
                     }
                     .searchJumperFrame-buttons {
                         text-align: center;
-                        margin-bottom: 5px;
+                        margin: 8px 4px;
                         display: flex;
                         justify-content: space-evenly;
                     }
                     .searchJumperFrame-buttons>button {
                         width: 32%;
-                        font-size: 16px;
+                        font-size: 14px;
                         cursor: pointer;
                         border: 1px solid #1976d2;
-                        border-radius: 4px;
-                        transition: all .3s;
+                        border-radius: 8px;
+                        transition: background-color .15s, box-shadow .15s;
                         color: #fff;
-                        background-color: #458bd1;
+                        background-color: #357dc5;
                         line-height: 25px;
+                        min-height: 32px;
                         padding: 3px;
                     }
                     .searchJumperFrame-buttons>button:hover {
@@ -14394,7 +17501,7 @@
                     }
                     .searchJumperFrame-crawlBody>.actionCon>div {
                         width: 100%;
-                        font-size: 16px;
+                        font-size: 14px;
                         background: #000000cc;
                         border-radius: 8px;
                         color: white;
@@ -14423,24 +17530,24 @@
                       .searchJumperFrame-inputs>textarea,
                       .searchJumperFrame-inputs>select,
                       .searchJumperFrame-body select {
-                        background-color: black!important;
-                        color: #d5d5d5!important;
+                        background-color: #1c2127!important;
+                        color: #d3d8df!important;
                       }
                       .searchJumperFrame-inputs>input:focus,
                       .searchJumperFrame-inputs>textarea:focus,
                       .searchJumperFrame-inputs>select:focus,
                       .searchJumperFrame-body select:focus {
-                        background-color: #1e1e1e!important;
+                        background-color: #283340!important;
                       }
                       .searchJumperFrame-inputs>input,
                       .searchJumperFrame-inputs>textarea,
                       .searchJumperFrame-inputs>select,
                       .searchJumperFrame-body select {
-                        border: 1px solid rgb(255 255 255 / 36%);
+                        border: 1px solid #ffffff33;
                       }
                       .searchJumperFrame-title,
                       .searchJumperFrame-buttons>button {
-                        background: #245d8f!important;
+                        background: #2a5c8d!important;
                       }
                       .searchJumperFrame-body>.iconsCon>img {
                         border: 2px solid #000000;
@@ -14456,9 +17563,9 @@
                 `;
                 let addFrameCssEle = _GM_addStyle(addFrameCssText);
                 addFrame = document.createElement("div");
-                addFrame.innerHTML = createHTML(`
+                setHTML(addFrame, `
                 <div class="searchJumperFrame-body">
-                    <a href="${configPage}" class="searchJumperFrame-title" target="_blank" draggable="false">
+                    <a href="${homePage}" class="searchJumperFrame-title" target="_blank" draggable="false">
                         <img width="32px" height="32px" src="${logoBase64}" />${i18n("addSearchEngine")}
                     </a>
                     <div class="searchJumperFrame-maxBtn">
@@ -14500,7 +17607,7 @@
                     </div>
                 </div>
                 <div class="searchJumperFrame-crawlBody searchJumperFrame-hide">
-                    <a href="${configPage}" class="searchJumperFrame-title" target="_blank">
+                    <a href="${homePage}" class="searchJumperFrame-title" target="_blank">
                         <img width="32px" height="32px" src="${logoBase64}" />${i18n("addAction")}
                     </a>
                     <svg class="searchJumperFrame-closeBtn" fill="white" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"><title>Close crawl</title>${closePath}</svg>
@@ -14606,6 +17713,16 @@
                                 if (click) {
                                     postParams.push(['@click', click.replace(/\\([\=&])/g, "$1").trim()]);
                                 }
+                            } else if (pair.startsWith("dblclick(") && pair.endsWith(')')) {
+                                let click = pair.slice(9, pair.length - 1);
+                                if (click) {
+                                    postParams.push(['@dblclick', click.replace(/\\([\=&])/g, "$1").trim()]);
+                                }
+                            } else if (pair.startsWith("rclick(") && pair.endsWith(')')) {
+                                let click = pair.slice(7, pair.length - 1);
+                                if (click) {
+                                    postParams.push(['@rclick', click.replace(/\\([\=&])/g, "$1").trim()]);
+                                }
                             } else if (pair.startsWith("copy(") && pair.endsWith(')')) {
                                 let copy = pair.slice(5, pair.length - 1);
                                 if (copy) {
@@ -14618,9 +17735,7 @@
                                 }
                             } else if (pair.startsWith("wait(") && pair.endsWith(')')) {
                                 let wait = pair.slice(5, pair.length - 1);
-                                if (wait) {
-                                    postParams.push(['@wait', wait.replace(/\\([\=&])/g, "$1").trim()]);
-                                }
+                                postParams.push(['@wait', wait.replace(/\\([\=&])/g, "$1").trim()]);
                             } else if (/^sleep\(\d+\)$/.test(pair)) {
                                 let sleep = pair.match(/sleep\((.*)\)/);
                                 if (sleep) {
@@ -14646,7 +17761,7 @@
                     } else if (/[:%]p{/.test(urlInput.value) || (charset && charset.toLowerCase() != 'utf-8')) {
                         submitByForm(charset, urlInput.value.replace(/%se?\b/g, "searchJumper"), "_blank");
                     } else {
-                        _GM_openInTab(urlInput.value.replace(/%se?\b/g, "searchJumper"), {active: true});
+                        _GM_openInTab(urlInput.value.replace(/%se?\b/g, "searchJumper"), {active: true, insert: true});
                     }
                 });
                 cancelBtn.addEventListener("click", e => {
@@ -14696,17 +17811,17 @@
                             if (openSelect.value && openSelect.value != '-1') {
                                 siteObj.openInNewTab = openSelect.value === 'true';
                             }
-                            if (charset && charset.toLowerCase() != 'utf-8') {
-                                siteObj.charset = charset;
+                            if (self.charset && charset.toLowerCase() != 'utf-8') {
+                                siteObj.charset = self.charset;
                             }
-                            if (kwFilter) {
-                                siteObj.kwFilter = kwFilter;
+                            if (self.kwFilter) {
+                                siteObj.kwFilter = self.kwFilter;
                             }
-                            if (match) {
-                                siteObj.match = match;
+                            if (self.match) {
+                                siteObj.match = self.match;
                             }
-                            if (hideNotMatch) {
-                                siteObj.hideNotMatch = hideNotMatch;
+                            if (self.hideNotMatch) {
+                                siteObj.hideNotMatch = self.hideNotMatch;
                             }
                         }
                         searchData.sitesConfig[typeSelect.value].sites.push(siteObj);
@@ -14747,6 +17862,12 @@
                         case "click":
                             words = i18n('clickOutput', sel);
                             break;
+                        case "dblclick":
+                            words = i18n('dblclickOutput', sel);
+                            break;
+                        case "rclick":
+                            words = i18n('rclickOutput', sel);
+                            break;
                         case "copy":
                             words = i18n('copyOutput', sel);
                             break;
@@ -14763,7 +17884,7 @@
                             break;
                     }
                     if (words) {
-                        div.innerHTML = createHTML(words);
+                        setHTML(div, words);
                         div.dataset.type = type;
                         div.dataset.sel = sel;
                         div.dataset.val = val;
@@ -14825,7 +17946,7 @@
                     }
                 };
                 let anylizeEmuUrl = () => {
-                    actionCon.innerHTML = createHTML();
+                    setHTML(actionCon, "");
                     let actionParams = urlInput.value.match(/#p{(.*)}/);
                     if (!actionParams) return;
                     actionParams[1].replace(/([^\\])&/g, "$1SJ^PARAM").split("SJ^PARAM").forEach(pair => {
@@ -14839,6 +17960,16 @@
                             let click = pair.slice(6, pair.length - 1);
                             if (click) {
                                 addAction('click', click.replace(/\\([\=&])/g, "$1").trim());
+                            }
+                        } else if (pair.startsWith("dblclick(") && pair.endsWith(')')) {
+                            let click = pair.slice(9, pair.length - 1);
+                            if (click) {
+                                addAction('dblclick', click.replace(/\\([\=&])/g, "$1").trim());
+                            }
+                        } else if (pair.startsWith("rclick(") && pair.endsWith(')')) {
+                            let click = pair.slice(7, pair.length - 1);
+                            if (click) {
+                                addAction('rclick', click.replace(/\\([\=&])/g, "$1").trim());
                             }
                         } else if (pair.startsWith("copy(") && pair.endsWith(')')) {
                             let copy = pair.slice(5, pair.length - 1);
@@ -14889,6 +18020,12 @@
                             case "click":
                                 actions.push(`click(${sel.replace(/([=&])/g, '\\$1')})`);
                                 break;
+                            case "dblclick":
+                                actions.push(`dblclick(${sel.replace(/([=&])/g, '\\$1')})`);
+                                break;
+                            case "rclick":
+                                actions.push(`rclick(${sel.replace(/([=&])/g, '\\$1')})`);
+                                break;
                             case "copy":
                                 actions.push(`copy(${sel.replace(/([=&])/g, '\\$1')})`);
                                 break;
@@ -14916,12 +18053,33 @@
                     addFrame.classList.remove("crawling");
                 });
                 let targetInput;
+                let clickTimer;
                 let clickSthHandler = e => {
                     if (addFrame.style.display === '') return;
                     if (/INPUT|TEXTAREA|SELECT|OPTION/i.test(e.target.nodeName)) {
                         return;
                     }
-                    addAction('click', picker.geneSelector(e.target, true));
+                    clearTimeout(clickTimer);
+                    clickTimer = setTimeout(() => {
+                        addAction('click', picker.geneSelector(e.target, true));
+                    }, 300);
+                };
+                let dblclickSthHandler = e => {
+                    if (addFrame.style.display === '') return;
+                    if (/INPUT|TEXTAREA|SELECT|OPTION/i.test(e.target.nodeName)) {
+                        return;
+                    }
+                    clearTimeout(clickTimer);
+                    addAction('dblclick', picker.geneSelector(e.target, true));
+                };
+                let rclickSthHandler = e => {
+                    if (addFrame.style.display === '') return;
+                    if (/INPUT|TEXTAREA|SELECT|OPTION/i.test(e.target.nodeName)) {
+                        return;
+                    }
+                    e.preventDefault();
+                    clearTimeout(clickTimer);
+                    addAction('rclick', picker.geneSelector(e.target, true));
                 };
                 let changeHandler = e => {
                     if (addFrame.style.display === '') return;
@@ -14929,19 +18087,22 @@
                 };
                 let keydownHandler = e => {
                     if (addFrame.style.display === '') return;
+                    let quit = false;
                     if (e.keyCode == 27) {
-                        addFrame.style.display = '';
-                        document.removeEventListener('keydown', keydownHandler, true);
-                        document.removeEventListener('click', clickSthHandler);
-                        document.removeEventListener('change', changeHandler);
+                        quit = true;
                     } else if (e.keyCode == 13) {
                         //enter
                         e.preventDefault();
                         e.stopPropagation();
                         e.target && e.target.blur && e.target.blur();
+                        quit = true;
+                    }
+                    if (quit) {
                         addFrame.style.display = '';
                         document.removeEventListener('keydown', keydownHandler, true);
                         document.removeEventListener('click', clickSthHandler);
+                        document.removeEventListener('dblclick', dblclickSthHandler);
+                        document.removeEventListener('contextmenu', rclickSthHandler);
                         document.removeEventListener('change', changeHandler);
                     }
                 };
@@ -14951,6 +18112,8 @@
                     setTimeout(() => {
                         document.addEventListener('keydown', keydownHandler, true);
                         document.addEventListener('click', clickSthHandler);
+                        document.addEventListener('dblclick', dblclickSthHandler);
+                        document.addEventListener('contextmenu', rclickSthHandler);
                         document.addEventListener('change', changeHandler);
                     }, 100);
                 });
@@ -14981,12 +18144,35 @@
                     }, !inLoop);
                     addFrame.style.display = 'none';
                 });
-                clickAction.addEventListener("click", e => {
+                clickAction.addEventListener("dblclick", e => {
+                    clearTimeout(clickTimer);
+                    e.preventDefault();
+                    e.stopPropagation();
                     picker.getSelector(selector => {
-                        addAction('click', selector);
+                        addAction('dblclick', selector);
                         addFrame.style.display = '';
                     }, !inLoop);
                     addFrame.style.display = 'none';
+                });
+                clickAction.addEventListener("contextmenu", e => {
+                    clearTimeout(clickTimer);
+                    e.preventDefault();
+                    e.stopPropagation();
+                    picker.getSelector(selector => {
+                        addAction('rclick', selector);
+                        addFrame.style.display = '';
+                    }, !inLoop);
+                    addFrame.style.display = 'none';
+                });
+                clickAction.addEventListener("click", e => {
+                    clearTimeout(clickTimer);
+                    clickTimer = setTimeout(() => {
+                        picker.getSelector(selector => {
+                            addAction('click', selector);
+                            addFrame.style.display = '';
+                        }, !inLoop);
+                        addFrame.style.display = 'none';
+                    }, 250);
                 });
                 sleepAction.addEventListener("click", e => {
                     let sleepTime = prompt(i18n('sleepPrompt'), 1000);
@@ -14999,6 +18185,11 @@
                         urlInput.value = location.href + '#p{' + actionUrl + '}';
                     }
                     addFrame.classList.remove("crawling");
+                });
+                addFrame.addEventListener("keydown", e => {
+                    if (e.keyCode == 13 && e.target && e.target.nodeName == 'INPUT') {
+                        addBtn.click();
+                    }
                 });
             }
             searchBar.addToShadow(addFrame);
@@ -15024,7 +18215,7 @@
                 iconShow.style.display = "none";
                 iconShow.src = (/^(showTips:)?https?:/.test(url) ? url.split('\n')[0].replace(/\?.*/, "").replace(/^(showTips:)?(https?:\/\/[^\/]+).*/, '$2') : location.origin) + "/favicon.ico";
             }
-            iconsCon.innerHTML = createHTML();
+            setHTML(iconsCon, "");
             if (icons && icons.length > 1) {
                 iconsCon.style.opacity = "";
                 icons.forEach(iconSrc => {
@@ -15221,10 +18412,10 @@
                     }
                 });
                 if (_keyWords) {
-                    searchBar.searchJumperInputKeyWords.value = _keyWords;
-                    if (_engine && searchBar.searchJumperInputKeyWords.value) {
-                        searchBar.searchBySiteName(_engine, {}, !!_self);
-                    }
+                    searchBar.searchJumperInputKeyWords.value = _keyWords || "";
+                }
+                if (_engine) {
+                    searchBar.searchBySiteName(_engine, {}, !!_self);
                 }
             }
             getBody(document).style.cssText = `
@@ -15241,26 +18432,31 @@
                     overflow: hidden;
                 `;
             if (searchData.prefConfig.bgUrl) {
-                getBody(document).style.backgroundImage = `url("${searchData.prefConfig.bgUrl}")`;
-                return;
+                allPageBgUrl = searchData.prefConfig.bgUrl;
+                if (allPageBgUrl.length) {
+                    getBody(document).style.backgroundImage = `url("${allPageBgUrl}")`;
+                    return;
+                }
             }
             storage.getItem("allPageBg", allPageBg => {
                 if (allPageBg) {
-                    getBody(document).style.backgroundImage = `url("${allPageBg.base64}")`;
+                    allPageBgUrl = allPageBg.url;
+                    getBody(document).style.backgroundImage = `url("${allPageBg.base64 || allPageBgUrl}")`;
                 } else allPageBg = {url: ""};
                 if (ext) {
                     chrome.runtime.sendMessage({action: "getBingBG", detail: {curBgUrl: allPageBg.url}}, function(r) {
                         if (r) {
                             allPageBg = r;
                             storage.setItem("allPageBg", allPageBg);
-                            getBody(document).style.backgroundImage = `url("${allPageBg.base64}")`;
+                            allPageBgUrl = allPageBg.url;
+                            getBody(document).style.backgroundImage = `url("${allPageBg.base64 || allPageBgUrl}")`;
                         }
                     });
                     return;
                 }
                 _GM_xmlhttpRequest({
                     method: 'GET',
-                    url: "http://global.bing.com/HPImageArchive.aspx?format=js&idx=0&pid=hp&video=1&n=1",
+                    url: "https://global.bing.com/HPImageArchive.aspx?format=js&idx=0&pid=hp&video=1&n=1",
                     onload: function(result) {
                         var jsonData = null;
                         try {
@@ -15269,6 +18465,7 @@
                             if (!/^https?:\/\//.test(bgUrl)) {
                                 bgUrl = "https://global.bing.com" + bgUrl;
                             }
+                            allPageBgUrl = bgUrl;
                             if (bgUrl == allPageBg.url) return;
                             _GM_xmlhttpRequest({
                                 method: 'GET',
@@ -15295,12 +18492,30 @@
         }
 
         async function initRun() {
-            await searchBar.initRun();
-            initListener();
-            initAllPage();
+            try {
+                await searchBar.initRun();
+                initListener();
+                initAllPage();
+                startupSelection.resume();
+            } catch (error) {
+                startupSelection.cancel();
+                throw error;
+            }
         }
 
         async function sleep(time) {
+            if (splitTaskSignal) {
+                const signal = splitTaskSignal;
+                signal.throwIfAborted();
+                return new Promise((resolve, reject) => {
+                    const abort = () => { clearTimeout(timer); reject(signal.reason); };
+                    const timer = setTimeout(() => {
+                        signal.removeEventListener('abort', abort);
+                        resolve();
+                    }, time);
+                    signal.addEventListener('abort', abort, {once: true});
+                });
+            }
             await new Promise((resolve) => {
                 setTimeout(() => {
                     resolve();
@@ -15309,93 +18524,40 @@
         }
 
         async function initData() {
-            let _searchData = await new Promise((resolve) => {
-                storage.getItem("searchData", data => {
-                    resolve(data);
-                });
-            });
-            cacheKeywords = await new Promise((resolve) => {
-                storage.getItem("cacheKeywords", data => {
-                    resolve(data || '');
-                });
-            });
-            cacheFilter = await new Promise((resolve) => {
-                storage.getItem("cacheFilter", data => {
-                    resolve(data || '');
-                });
-            });
-            disableState = await new Promise((resolve) => {
-                storage.getItem("disableState", data => {
-                    resolve(data || false);
-                });
-            });
-            tipsStorage = await new Promise((resolve) => {
-                storage.getItem("tipsStorage", data => {
-                    resolve(data || []);
-                });
-            });
-            lastSign = await new Promise((resolve) => {
-                storage.getItem("lastSign", data => {
-                    resolve(data || false);
-                });
-            });
+            const keys = ['searchData', 'cacheKeywords', 'cacheFilter', 'disableState', 'tipsStorage',
+                'lastSign', 'historySites', 'historyType', 'sortTypeNames',
+                'sortSiteNames', 'globalInPageWords', 'navEnable', 'referrer', 'clickLink', 'disableHighlight',
+                'lastHighlight', 'allPageNewMode', 'lastAddType'];
+            if (!ext) keys.push('cacheIcon', 'inPagePostParams');
+            const [data, pageActions] = await Promise.all([
+                ext ? extensionApi.storage.local.get(keys) :
+                    Promise.all(keys.map(async key => [key, await storage.getItem(key)])).then(Object.fromEntries),
+                ext ? storage.getListItem("inPagePostParams", location.hostname) : null
+            ]);
+            let _searchData = data.searchData;
+            cacheKeywords = data.cacheKeywords || '';
+            cacheFilter = data.cacheFilter || '';
+            disableState = data.disableState || false;
+            tipsStorage = data.tipsStorage || [];
+            lastSign = data.lastSign || false;
             storage.setItem("lastSign", false);
-            inPagePostParams = await storage.getListItem("inPagePostParams", location.hostname);
-            cacheIcon = await new Promise((resolve) => {
-                storage.getItem("cacheIcon", data => {
-                    resolve(data || {});
-                });
-            });
-            historySites = await new Promise((resolve) => {
-                storage.getItem("historySites", data => {
-                    resolve(data || []);
-                });
-            });
-            historyType = await new Promise((resolve) => {
-                storage.getItem("historyType", data => {
-                    resolve(data || '');
-                });
-            });
-            sortTypeNames = await new Promise((resolve) => {
-                storage.getItem("sortTypeNames", data => {
-                    resolve(data || {});
-                });
-            });
-            sortSiteNames = await new Promise((resolve) => {
-                storage.getItem("sortSiteNames", data => {
-                    resolve(data || {});
-                });
-            });
-            globalInPageWords = await new Promise((resolve) => {
-                storage.getItem("globalInPageWords", data => {
-                    resolve(data || '');
-                });
-            });
-            navEnable = await new Promise((resolve) => {
-                storage.getItem("navEnable", data => {
-                    resolve(typeof data === "undefined" ? true : data);
-                });
-            });
-            referrer = await new Promise((resolve) => {
-                storage.getItem("referrer", data => {
-                    resolve(data || "");
-                });
-            });
-            disableHighlight = await new Promise((resolve) => {
-                storage.getItem("disableHighlight", data => {
-                    resolve(data || "");
-                });
-            });
-            allPageNewMode = await new Promise((resolve) => {
-                storage.getItem("allPageNewMode", data => {
-                    resolve(data || false);
-                });
-            });
-            lastAddType = await new Promise((resolve) => {
-                storage.getItem("lastAddType", data => {
-                    resolve(data || "");
-                });
-            });
+            if (typeof storage.listItemCache.inPagePostParams === 'undefined') {
+                storage.listItemCache.inPagePostParams = data.inPagePostParams || null;
+            }
+            inPagePostParams = ext ? pageActions : await storage.getListItem("inPagePostParams", location.hostname);
+            cacheIcon = data.cacheIcon || {};
+            historySites = data.historySites || [];
+            historyType = data.historyType || '';
+            sortTypeNames = data.sortTypeNames || {};
+            sortSiteNames = data.sortSiteNames || {};
+            globalInPageWords = data.globalInPageWords || '';
+            navEnable = typeof data.navEnable === 'undefined' ? true : data.navEnable;
+            referrer = data.referrer || '';
+            clickLink = data.clickLink || '';
+            disableHighlight = data.disableHighlight || '';
+            lastHighlight = data.lastHighlight || '';
+            allPageNewMode = data.allPageNewMode || false;
+            lastAddType = data.lastAddType || '';
             if (_searchData) {
                 searchData = _searchData;
                 lastModified = searchData.lastModified;
@@ -15403,17 +18565,22 @@
             if (!searchData.lastModified) {
                 searchData.sitesConfig = sitesConfig;
             }
+            if (ext && searchData.prefConfig.cacheSwitch) {
+                const keys = searchData.sitesConfig.filter(type => /^[a-z\- ]+$/.test(type.icon || ''))
+                    .map(type => type.icon.trim().replace(/ /g, '_'));
+                if (keys.length) cacheIcon = await extensionApi.runtime.sendMessage({action: 'getIconCache', detail: {keys}}) || {};
+            }
             if (searchData.prefConfig.lang && searchData.prefConfig.lang != '0') {
                 lang = searchData.prefConfig.lang;
             }
             setLang();
-            if (searchData.prefConfig.firstRun) {
+            if (searchData.prefConfig.firstRun && (ext || storage.supportCrossSave())) {
                 searchData.prefConfig.firstRun = false;
                 storage.setItem("searchData", searchData);
                 setTimeout(() => {
                     storage.getItem("searchData", data => {
-                        if (data.prefConfig.firstRun === false) {
-                            _GM_openInTab(firstRunPage, {active: true});
+                        if (data.prefConfig.firstRun === false && !ext) {
+                            _GM_openInTab(firstRunPage, {active: true, insert: true});
                         }
                     });
                 }, 100);
@@ -15489,14 +18656,14 @@
                 searchData.prefConfig.disableTypeOpen = false;
             }
             if (ext) {
-                configPage = chrome.runtime.getURL('config/index.html');;
+                configPage = chrome.runtime.getURL('config/index.html');
+                if (!searchData.prefConfig.configPage) {
+                    searchData.prefConfig.configPage = configPage;
+                }
             } else if (searchData.prefConfig.configPage) {
                 configPage = searchData.prefConfig.configPage;
             } else {
                 searchData.prefConfig.configPage = configPage;
-            }
-            if (searchData.webdavConfig) {
-                webDAV = new WebDAV(searchData.webdavConfig.host + "/SearchJumper" + (searchData.webdavConfig.path || "").replace(/^\/*/, "/").replace(/\/*$/, "/"), searchData.webdavConfig.username, searchData.webdavConfig.password);
             }
         }
 
@@ -15528,12 +18695,12 @@
             return false;
         }
 
-        if (location.href.indexOf("#searchJumperMin") != -1) {
+        if (href.indexOf("#searchJumperMin") != -1) {
             inMinMode = true;
-            if (location.href.indexOf("#searchJumperMinPost") != -1) {
-                window.history.replaceState(null, '', location.href.replace(/#searchJumperMin(Post)?/, ""));
+            if (href.indexOf("#searchJumperMinPost") != -1) {
+                window.history.replaceState(null, '', href.replace(/#searchJumperMin(Post)?/, ""));
             } else {
-                if (location.href.indexOf("#searchJumperMinMobile") != -1) {
+                if (href.indexOf("#searchJumperMinMobile") != -1) {
                     Object.defineProperty(Object.getPrototypeOf(navigator), 'userAgent', { get:function() { return mobileUa }});
                     _GM_xmlhttpRequest({
                         method: 'GET',
@@ -15559,6 +18726,73 @@
         }
         if (document.title == 'SearchJumper Multi') return;
 
+        async function initSplit() {
+            const saved = await storage.getItem('searchData');
+            if (saved) {
+                searchData = {...searchData, ...saved, prefConfig: {...searchData.prefConfig, ...saved.prefConfig}};
+            }
+            if (searchData.prefConfig.lang && searchData.prefConfig.lang !== '0') lang = searchData.prefConfig.lang;
+            setLang();
+            cacheIcon = {};
+            cacheKeywords = '';
+            initView();
+            searchBar.siteIndex = 1;
+            searchBar.allSiteBtns = [];
+            searchBar.allListBtns = [];
+            searchBar.allLists = [];
+            targetElement = getBody(document);
+            if (isSplitPage) {
+                const buttons = new Map();
+                window.dispatchEvent(new CustomEvent('searchjumper-split-ready', {detail: {
+                    text: i18n('split'),
+                    resolve: async (entry, query, context) => {
+                        if (!buttons.has(entry.id)) {
+                            const button = await searchBar.createSiteBtn('0', {...entry.site}, true, false, entry.type || {});
+                            buttons.set(entry.id, button);
+                            searchBar.allSiteBtns.push([button, entry.site]);
+                        }
+                        searchBar.stopInput = false;
+                        return buttons.get(entry.id).resolveSplit(query, context);
+                    },
+                    submitForm: submitByForm
+                }}));
+                return;
+            }
+            let controller;
+            let running = Promise.resolve();
+            const report = message => extensionApi.runtime.sendMessage({
+                action: 'splitFrameResult', paneId: splitFrame.paneId, ...splitFrameAdapter?.identity, ...message
+            }).catch(error => console.warn('SearchJumper split:', error.message));
+            chrome.runtime.onMessage.addListener((request, sender, respond) => {
+                if (sender.id !== chrome.runtime.id || (splitFrameAdapter && !splitFrameAdapter.accepts(request))) return;
+                if (request.command === 'splitCancel') {
+                    controller?.abort(new DOMException('Cancelled', 'AbortError'));
+                    respond({ok: true});
+                } else if (request.command === 'splitExecute') {
+                    controller?.abort(new DOMException('Superseded', 'AbortError'));
+                    const next = new AbortController();
+                    controller = next;
+                    running = running.catch(() => {}).then(async () => {
+                        if (next.signal.aborted) return;
+                        splitTaskSignal = next.signal;
+                        const timer = setTimeout(() => next.abort(new Error('timeout')), 30000);
+                        try {
+                            await searchBar.submitAction(request.actions);
+                            checkSplitTask();
+                            await report({requestId: request.requestId, status: 'done'});
+                        } catch (error) {
+                            if (error.name !== 'AbortError') await report({requestId: request.requestId, status: 'error', error: error.message});
+                        } finally {
+                            clearTimeout(timer);
+                            splitTaskSignal = null;
+                        }
+                    });
+                    respond({ok: true});
+                }
+            });
+            await extensionApi.runtime.sendMessage({action: 'splitFrameReady', paneId: splitFrame.paneId, ...splitFrameAdapter?.identity});
+        }
+
         var inited = false;
         var checkGlobalIntv, flashTitleIntv, defaultTitle;
         async function init(cb) {
@@ -15566,13 +18800,20 @@
                 if (cb) cb();
                 return;
             }
-            if (!document.hidden) {
-                inited = true;
+            inited = true;
+            try {
+                if (isSplitPage || splitFrame?.ok) {
+                    try { await initSplit(); }
+                    catch (error) {
+                        if (isSplitPage) window.dispatchEvent(new CustomEvent('searchjumper-split-error', {detail: error.message}));
+                        else console.error('SearchJumper split:', error);
+                    }
+                    return;
+                }
                 preAction();
                 await initData();
                 if (disableState) return;
                 if (searchData.prefConfig.blacklist && searchData.prefConfig.blacklist.length > 0) {
-                    let href = location.href.slice(0, 500);
                     let commentStart = false;
                     for (let i = 0; i < searchData.prefConfig.blacklist.length; i++) {
                         let curGlob = searchData.prefConfig.blacklist[i];
@@ -15601,10 +18842,12 @@
                 initView();
                 await initConfig();
                 initMycroft();
-                initRun();
+                searchBar.ready = initRun();
                 if (cb) cb();
+                defaultTitle = document.title;
+            } finally {
+                if (!searchBar || !searchBar.ready) startupSelection.cancel();
             }
-            defaultTitle = document.title;
         }
 
         function checkVisibility() {
@@ -15655,12 +18898,13 @@
 
         var waiting = false;
         function visibilitychangeHandler() {
+            if (!document.head || !getBody(document) || inIframe || disableState) return;
             if (searchData.prefConfig.globalSearchNow) {
                 clearInterval(checkGlobalIntv);
                 clearInterval(flashTitleIntv);
                 if (document.hidden) {
                     defaultTitle = document.title;
-                } else document.title = defaultTitle;
+                } else if (defaultTitle) document.title = defaultTitle;
             }
             if (waiting) return;
             waiting = true;
@@ -15670,8 +18914,11 @@
             }, 500);
         }
 
+        const startupSelection = captureStartupSelection();
         storage.getItem("postUrl", postUrl => {
+            if (isSplitPage || splitFrame?.ok) postUrl = null;
             if (postUrl && postUrl[0].indexOf(location.hostname.replace(/.*\.(\w+\.\w+)/, "$1")) != -1) {
+                startupSelection.cancel();
                 storage.setItem("postUrl", '');
                 submitByForm(postUrl[1], postUrl[0], '_self');
             } else {
@@ -15689,7 +18936,7 @@
                     };
                     checkReady();
                 }
-                document.addEventListener('visibilitychange', visibilitychangeHandler);
+                if (!isSplitPage && !splitFrame?.ok) document.addEventListener('visibilitychange', visibilitychangeHandler);
             }
         });
     }

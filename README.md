@@ -1,23 +1,32 @@
-# [SearchJumper](https://chromewebstore.google.com/detail/hgepmblbgodbilmfdjkalkgofdcipkhh "Install from Chrome web store 搜尋引擎輔助增強瀏覽器插件，一键切换搜尋引擎，支援拖拽搜尋/劃詞搜尋/快捷鍵等。検索機能強化。検索ちゃん")  [💞Share your search engines](https://github.com/hoothin/SearchJumper/discussions/categories/search-engines?discussions_q=)
+<h1 align="center" title="Completely open-source, with no privacy collection, ads, or shady third-party libraries. Make search great again.">🔎SearchJumper</h1>
+<h2 align="center"><i>Your open-source search hub. Fast, smart, and private.</i></h2>
+<p align="center">
+ <a href="https://chromewebstore.google.com/detail/hgepmblbgodbilmfdjkalkgofdcipkhh"><img src="https://img.shields.io/chrome-web-store/rating/hgepmblbgodbilmfdjkalkgofdcipkhh?logo=chromewebstore" alt="chrome"/></a>
+ <a href="https://addons.mozilla.org/firefox/addon/searchjumper/"><img src="https://img.shields.io/amo/rating/searchjumper?logo=firefox" alt="firefox"/></a>
+ <a href="https://github.com/hoothin/SearchJumper"><img src="https://img.shields.io/github/stars/hoothin/searchjumper" alt="github"/></a>
+</p>
 
 [![i](assets/logo.jpg)](https://search.hoothin.com/)
 
-![star](https://img.shields.io/github/stars/hoothin/SearchJumper)
-![react-version](https://img.shields.io/badge/React.js-lastest-yellow.svg)
-![materialUI-version](https://img.shields.io/badge/MaterialUI-lastest-indigo.svg)
-![license](https://img.shields.io/badge/License-GPL3.0-orange.svg)
-![FontAwesome](https://img.shields.io/badge/FontAwesome-6.0-green.svg)
-![support](https://img.shields.io/badge/Support-Chrome|Firefox|Edge-red.svg)
-> *Just a personal work, maybe not suit you.* 📖[**Guide**](https://search.hoothin.com/)
+<h3 align="center"><a href="https://github.com/hoothin/SearchJumper/discussions/categories/search-engines?discussions_q=">💞Contribute your search engines</a> <a href="https://search.hoothin.com/">📖Guide</a></h3>
+<p align="center">
+ <img src="https://img.shields.io/badge/React.js-lastest-yellow.svg" alt="react-version"/>
+ <img src="https://img.shields.io/badge/MaterialUI-lastest-indigo.svg" alt="materialUI-version"/>
+ <img src="https://img.shields.io/badge/License-GPL3.0-orange.svg" alt="license"/>
+ <img src="https://img.shields.io/badge/FontAwesome-6.0-green.svg" alt="FontAwesome"/>
+ <img src="https://img.shields.io/badge/Support-Chrome|Firefox|Edge-red.svg" alt="support"/>
+</p>
 
 + Build with React.js
 + UI: Material-UI
 + Icons: FontAwesome
 
+> *Just a personal work, maybe not suit you. 古法編碼，no Vibe*
+
 ## Install
-| Install via [Chrome web store](https://chromewebstore.google.com/detail/hgepmblbgodbilmfdjkalkgofdcipkhh) | Install via [Firefox addons](https://addons.mozilla.org/firefox/addon/searchjumper/) | Install via [Greasyfork](https://greasyfork.org/scripts/445274) |
+| Install via [Chrome web store](https://chromewebstore.google.com/detail/hgepmblbgodbilmfdjkalkgofdcipkhh) | Install via [Greasyfork](https://greasyfork.org/scripts/445274) | Install via [Firefox addons](https://addons.mozilla.org/firefox/addon/searchjumper/) |
 |---|---|---|
-| [![](https://img.shields.io/chrome-web-store/users/hgepmblbgodbilmfdjkalkgofdcipkhh)](https://chromewebstore.google.com/detail/hgepmblbgodbilmfdjkalkgofdcipkhh)                       | [![](https://img.shields.io/amo/users/searchjumper)](https://addons.mozilla.org/firefox/addon/searchjumper/)                                      | [![](https://img.shields.io/greasyfork/dt/445274)](https://greasyfork.org/scripts/445274)                |
+| [![](https://img.shields.io/chrome-web-store/users/hgepmblbgodbilmfdjkalkgofdcipkhh)](https://chromewebstore.google.com/detail/hgepmblbgodbilmfdjkalkgofdcipkhh) | [![](https://img.shields.io/greasyfork/dt/445274)](https://greasyfork.org/scripts/445274) | [![](https://img.shields.io/amo/users/searchjumper)](https://addons.mozilla.org/firefox/addon/searchjumper/) |
 
 <img src='assets/demo1.gif' height='221px'><img src='assets/demo3.gif' height='221px'><img src='assets/demo2.gif' height='221px'>
 
@@ -143,21 +152,28 @@ Select the above text, PopClip will offer an "Install Extension" action. Click i
 
 ---
 
+## Pre-highlight 預高亮
+You can share highlighted links with SearchJumper users in the following ways:
+
+**#sjhl=**`highlight words` **&i=**`index of words`
+
+e.g.,`https://github.com/hoothin/SearchJumper#sjhl=SearchJumper&i=7`
+
 ## Search engine examples 搜尋引擎規則範例
 
 + Open link in the text, display only when a link is detected 打開文字中的鏈接，僅當檢測到鏈接時顯示
 ``` json
 {
-  "name": "打開文字中的鏈接",
+  "name": "Open link in text",
   "url": "%sr.replace(/(点|。)/g,\".\").replace(/[^\\s\\w\\-_\\.~!\\*';:@&=\\+\\$,\\/\\?#\\[\\]%]/g,\"\").replace(/https:\\/\\/pan\\.baidu\\.com\\/s\\//,\"\").replace(/.*([\\s:：]|^)(1[a-z_0-9]{22,})[\\s\\S]*?\\b([a-z0-9]{4}\\b|$).*/i,\"https://pan.baidu.com/s/$2?pwd=$3\").replace(/ /g,\"\").replace(/^/,\"http://\").replace(/^http:\\/\\/(https?:)/,\"$1\")",
-  "kwFilter": "\\w.*[\\.点。].*\\w|1[a-zA-Z0-9]{22,}"
+  "kwFilter": "\\w\\S*\\.\\S*\\w|\\w.*[点。].*\\w|1[a-zA-Z0-9]{22,}"
 }
 ```
 + Automatically send target text to other device like mobile phone 自動發送選中文字到手機
 ``` json
 {
-  "name": "發送到手機",
-  "url": "https://s.hoothin.com/#p{wait(x-peer)&call(document.querySelector('x-peer').dispatchEvent(new Event('contextmenu')))&#textInput=%s&click(#textInput+div>button)}"
+  "name": "Send to phone",
+  "url": "https://s.hoothin.com/#p{wait(x-peer)&rclick(x-peer)&#textInput=%s&click(#textInput+div>button)}"
 }
 ```
 + Split by line and paste into the current input box in order 按行分割後依次粘貼到當前輸入框
@@ -171,38 +187,31 @@ Select the above text, PopClip will offer an "Install Extension" action. Click i
 ``` json
 {
   "name": "💲USD to RMB",
-  "url": "showTips:https://api.exchangerate.host/convert?from=USD&to=CNY&amount=1 \n{name}<br/><i>%s USD = {json.result|*%s.replace(/\\D/,'')} RMB</i>",
+  "url": "showTips:https://api.exchangerate.host/convert?from=USD&to=CNY&amount=1 \n{name}<br/><i>%sr USD = {json.result|*%sr.replace(/\\D/,'')} RMB</i>",
   "kwFilter": "\\d\\$|\\$\\d"
 }
 ```
-+ Currency conversion of various countries 各國貨幣轉換 **javascript is effective only at userscript**
++ Currency conversion of various countries 各國貨幣轉換
 ``` json
 {
-  "name": "貨幣轉換",
-  "url": "javascript:fetch(`https://api.exchangerate.host/convert?from=%input{From currency/US Dollar/Euro/Japanese Yen/China Yuan,USD/EUR/JPY/CNY}&to=%input{Target currency/US Dollar/Euro/Japanese Yen/China Yuan,USD/EUR/JPY/CNY}&amount=%sr.replace(/\\D/g,\"\")`).then(r=>r.json()).then(r=>prompt(`${r.date} Exchange rate by the European Central Bank\\n${r.query.amount.toLocaleString()} ${r.query.from} =`,`${r.result.toLocaleString()} ${r.query.to}`)).catch(alert);"
-}
-```
-+ Miles to kilometers and show in tips 英里轉公里並顯示為 tips
-``` json
-{
-  "name": "📏 英里轉公里",
-  "url": "showTips:let s=\"%sr\".match(/(\\d+)(英里|英?哩|mi(le)?)/)[1];let km=(s*1.609344).toFixed(2);return `<i>${s} mi = ${km} km</i>`;",
-  "kwFilter": "\\d+\\s*(英里|英?哩|mi(le)?\\b)"
-}
-```
-+ Preview Japan AV 框選番號預覽AV such as ABW-345
-``` json
-{
-  "name": "💞 AV預覽",
-  "url": "showTips:https://www.javbus.com/%sr.replace(/^(\\w+?)[\\-_]?(\\d+)$/,\"$1-$2\") \n<span style='font-size:22px;line-height:1.2;'>{h3}</span>\n<p style=\"margin: 0; font-size: 18px; font-weight: normal;\">{.info>p:nth-child(2)}</p>\n<p style=\"margin: 0; font-size: 18px; font-weight: normal;\">{.info>p:nth-child(6)}</p>\n<p style=\"margin: 0;\">{.genre a|<mark style=\"white-space: nowrap;margin: 5px; font-size: 16px; border-radius: 5px; padding: 2px; box-shadow: 0px 0px 10px 0px #000;\">()</mark>}</p>\n<img src='https://www.javbus.com{a.bigImage>img|src}' referrerpolicy='no-referrer'/>",
-  "kwFilter": "^[0-9a-zA-Z]+[\\-_]?\\d+$"
+  "name": "💲Currency convert",
+  "url": "showTips:http://apilayer.net/api/convert?from=%input{From currency/US Dollar/Euro/Japanese Yen/China Yuan,USD/EUR/JPY/CNY}&to=%input{Target currency/US Dollar/Euro/Japanese Yen/China Yuan,USD/EUR/JPY/CNY}&amount=1&access_key=%template{apilayer key}\n{name}<br/><i>%sr {json.query.from} = {json.result|*%sr.replace(/\\D/,'')} {json.query.to}</i>"
 }
 ```
 + Show Romaji of japanese 顯示日語對應羅馬音/羅馬字
 ``` json
 {
-  "name": "🗻 日語羅馬字",
-  "url": "showTips:https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&dt=bd&dj=1&dt=ex&dt=ld&dt=md&dt=qca&dt=rw&dt=rm&dt=ss&dt=at&sl=ja&tl=zh_CN&q=%sr\n<h3>{name}</h3>\n{json.sentences.0.trans}\n<br>\n<font color='yellow'>{json.sentences.1.src_translit}</font>"
+    "name": "🗻 Japanese romaji",
+    "url": "showTips:https://translate.googleapis.com/translate_a/single%p{client=gtx&dt=t&dt=bd&dj=1&dt=ex&dt=ld&dt=md&dt=qca&dt=rw&dt=rm&dt=ss&dt=at&sl=ja&tl=zh_CN&q=%s}\n<h3 style='margin: 0;'>{name}</h3>\n{json.sentences.all.trans}\n<br>\n<font style='display: block;' color='antiquewhite'>{json.sentences.all.orig}</font>\n<font style='display: block;' color='yellow'>{json.sentences.-1.src_translit}</font>\n<span style=\"cursor:pointer;color:#f9690e;\" data-read=\"%sr.replace(/\"/g,\"&quot;\")\" data-lang=\"ja\" data-rate=\"1\" data-volume=\"1\">🔈Read</span>",
+    "kwFilter": "[\\u3040-\\u309F\\u30A0-\\u30FF]"
+}
+```
++ Convert miles and kilometers 轉換英哩與公里
+``` json
+{
+  "name": "📏 Mile to km",
+  "url": "showTips:\n<i>%sr.replace(/(\\d+)(英里|英?哩|mi(le)?)/,\"$1\") mi = {%sr.replace(/(\\d+)(英里|英?哩|mi(le)?)/,\"$1\")*1.609344} km</i>",
+  "kwFilter": "\\d+\\s*(英里|英?哩|mi(le)?\\b)"
 }
 ```
 
@@ -222,19 +231,30 @@ Select the above text, PopClip will offer an "Install Extension" action. Click i
  <details>
 <summary><h2>Auto highlight rule examples 自動高亮詞規則範例</h2></summary>
 
-Highlight all avID on t66y 在草榴上高亮番號
+Highlight all text URL on any site 在任意網頁上高亮文字網址
 ``` json
 {
-    "/^https://t66y\\.com/htm_data//i": {
-        "sep": "#",
+    "*": {
         "words": [
-            "/(^|\\s)([a-z]\\w+\\-?|\\d{5,}\\-)\\d{2,}($|\\s)/i$s{unset;border-radius:unset;border-bottom:5px dotted red;}$t{@popup}"
+            "/(https?:\\/\\/|www\\.)[^\\s\"'\\\\{}\\(\\)\\[\\]#]+\\.[^\\s\"'\\\\{}\\(\\)\\[\\]#]+/i$s{unset;border-radius:unset;border-bottom-width:5px;border-bottom-style:dotted;border-bottom-color:red;}$t{@popup}"
         ]
     }
 }
 ```
-+ Effect on the site matched RegExp `^https://t66y\\.com/htm_data/` with case ignore
- >匹配到草榴網址的正則 `^https://t66y\\.com/htm_data/` 后生效，不區分大小寫
+
+Highlight all avID on t66y 在草榴上高亮番號
+``` json
+{
+    "//htm_data//i": {
+        "sep": "#",
+        "words": [
+            "/(?<![a-zA-Z0-9])([a-z]\\w+\\-?|\\d{5,}\\-)\\d{2,}(?![a-zA-Z0-9])/i$s{unset;border-radius:unset;border-bottom:5px dotted red;}$t{@popup(💞 预览)}$in{.tpc_content }"
+        ]
+    }
+}
+```
++ Effect on the site matched RegExp `/htm_data/` with case ignore
+ >匹配到草榴網址的正則 `/htm_data/` 后生效，不區分大小寫
 + Split by "#" as there is space in the keyWords under
  >以#分隔，因爲下面的關鍵詞中有空格
 + Search words according to the regular pattern at first, then add style "background:unset;border-bottom:5px dotted red;" to the highlighted words, finally add the feature of hovering the mouse to pop up the search box
@@ -275,7 +295,7 @@ Hide user by target id on xxxx.com 在某個網站上根據給定的用戶名或
 
 ---
  <details>
-<summary><h2>Call SearchJumper by event 透過鼠標手勢調用搜尋醬</h2></summary>
+<summary><h2>Call SearchJumper by event 透過發送事件（鼠標手勢）調用搜尋醬</h2></summary>
 
 + Search by site name 以站點名調用搜尋
 ``` javascript
@@ -285,6 +305,19 @@ const searchJumperEvent = new CustomEvent('searchJumper', {
   detail: {
     action: 'search',
     name: siteName
+  }
+});
+document.dispatchEvent(searchJumperEvent);
+```
++ Search by site name and specify string 以站點名和指定字符調用搜尋
+``` javascript
+const siteName = 'Google search';
+const query = 'your string 1234';
+const searchJumperEvent = new CustomEvent('searchJumper', {
+  detail: {
+    action: 'search',
+    name: siteName,
+    query: query
   }
 });
 document.dispatchEvent(searchJumperEvent);
@@ -448,3 +481,13 @@ users:
 ![i](assets/batchOpen3.jpg)
 
  </details>
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=hoothin%2FSearchJumper&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=hoothin/SearchJumper&type=date&theme=dark&legend=top-left&sealed_token=iCwYj-Gtf9RxJRAIVS5ivZTU664ZHacpQ68jfTeUcXf5LnGbP09n99T3Av7_pdVnQtLfubl0pp_5zKqxrHD8r0WdR1EYD4-r5OfiqxvgcjvMMvgvJK5hQQ" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=hoothin/SearchJumper&type=date&legend=top-left&sealed_token=iCwYj-Gtf9RxJRAIVS5ivZTU664ZHacpQ68jfTeUcXf5LnGbP09n99T3Av7_pdVnQtLfubl0pp_5zKqxrHD8r0WdR1EYD4-r5OfiqxvgcjvMMvgvJK5hQQ" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=hoothin/SearchJumper&type=date&legend=top-left&sealed_token=iCwYj-Gtf9RxJRAIVS5ivZTU664ZHacpQ68jfTeUcXf5LnGbP09n99T3Av7_pdVnQtLfubl0pp_5zKqxrHD8r0WdR1EYD4-r5OfiqxvgcjvMMvgvJK5hQQ" />
+ </picture>
+</a>

@@ -1,4 +1,5 @@
 import React from 'react';
+import locateResult from '../locateResult';
 import Paper from '@mui/material/Paper';
 import Box from '@mui/material/Box';
 import Avatar from '@mui/material/Avatar';
@@ -409,6 +410,7 @@ function TypeEdit(props) {
                                 <MenuItem value={4}>{window.i18n("openInBackOption")}</MenuItem>
                                 <MenuItem value={2}>{window.i18n("openInIncognitoOption")}</MenuItem>
                                 <MenuItem value={3}>{window.i18n("openInMinWindowOption")}</MenuItem>
+                                {window.splitEnabled && <MenuItem value={5}>{window.i18n("openInSplitOption")}</MenuItem>}
                             </Select>
                         </FormControl>
                     </AccordionDetails>
@@ -437,6 +439,7 @@ class ChildSiteIcons extends React.Component {
     }
 
     getIcon(site){
+        let icon = "";
         let isClone = site.url.indexOf('[') === 0;
         if (isClone) {
             try {
@@ -448,7 +451,8 @@ class ChildSiteIcons extends React.Component {
                         for (let j = 0; j < sites.length; j++) {
                             let _site = sites[j];
                             if (_site.url.indexOf('[') !== 0 && _site.name === siteNames[0]) {
-                                return _site.icon || _site.url.replace(new RegExp('^(showTips:)?(https?://[^/]*/)[\\s\\S]*$'), "$2favicon.ico");
+                                icon = _site.icon || _site.url.replace(new RegExp('^(showTips:)?(https?://[^/]*/)[\\s\\S]*$'), "$2favicon.ico");
+                                return (/^http/.test(icon) && window.cacheIcon[icon]) || icon;
                             }
                         }
                     }
@@ -457,12 +461,13 @@ class ChildSiteIcons extends React.Component {
                 console.log(e);
             }
         }
+        
         if (site.icon) {
-            return site.icon;
+            icon = site.icon;
         } else if (/^(showTips:)?https?:/.test(site.url)) {
-            return site.url.replace(new RegExp('^(showTips:)?(https?://[^/]*/)[\\s\\S]*$'), "$2favicon.ico");
+            icon = site.url.replace(new RegExp('^(showTips:)?(https?://[^/]*/)[\\s\\S]*$'), "$2favicon.ico");
         }
-        return "";
+        return (/^http/.test(icon) && window.cacheIcon[icon]) || icon;
     }
 
     dragOver(e) {
@@ -671,7 +676,7 @@ class SitesList extends React.Component {
                 for (let j = 0; j < sites.length; j++) {
                     let site = sites[j];
                     if (site.url === this.editSite.url) continue;
-                    if (site.url === this.state.currentSite.url) {
+                    if (!isClone && site.url === this.state.currentSite.url) {
                         return this.handleAlertOpen(window.i18n('sameSiteUrl'));
                     }
                     if (this.state.currentSite.shortcut) {
@@ -1104,6 +1109,8 @@ class SitesList extends React.Component {
                                     label={window.i18n('siteKeywords')}
                                     type="text"
                                     fullWidth
+                                    multiline
+                                    maxRows={5}
                                     variant="standard"
                                     placeholder="wd|q"
                                     value={this.state.currentSite.keywords}
@@ -1426,8 +1433,8 @@ const allCharset = [
 
 function a11yProps(index: number) {
     return {
-        id: `vertical-tab-${index}`,
-        'aria-controls': `vertical-tabpanel-${index}`,
+        id: `engine-tab-${index}`,
+        'aria-controls': `engine-tabpanel-${index}`,
     };
 }
 
@@ -1514,8 +1521,8 @@ function TabPanel(props: TabPanelProps) {
         <div
             role="tabpanel"
             hidden={value !== index}
-            id={`vertical-tabpanel-${index}`}
-            aria-labelledby={`vertical-tab-${index}`}
+            id={`engine-tabpanel-${index}`}
+            aria-labelledby={`engine-tab-${index}`}
             style={{width: '100%'}}
             {...other}
         >
@@ -1535,7 +1542,7 @@ function createData(
   return { param, info };
 }
 
-var verifyArray, filterDataListTimer, filterHighlightTimer, inited = false;
+var verifyArray, filterHighlightFrame, inited = false;
 
 function sendVerifyRequest() {
     if (!verifyArray || !verifyArray.length) {
@@ -1562,42 +1569,27 @@ function sendVerifyRequest() {
 }
 
 function forwordToSite(inputWord) {
-    let filterEngine = document.querySelector('.site-icon.filter');
-    if (filterEngine) {
-        filterEngine.classList.remove('filter');
+    locateResult();
+    cancelAnimationFrame(filterHighlightFrame);
+    if (!inputWord) return false;
+    let typeIndex, siteIndex = -1;
+    if (typeof inputWord === 'object') {
+        ({typeIndex, siteIndex} = inputWord);
+    } else {
+        const groupPrefix = `【${window.i18n('category')}】`;
+        const filterGroup = inputWord.startsWith(groupPrefix);
+        typeIndex = window.searchData.sitesConfig.findIndex(data => {
+            if (filterGroup) return inputWord.slice(groupPrefix.length) === data.type;
+            siteIndex = data.sites.findIndex(site => site.name === inputWord || site.url.replace(/\n/g, "") === inputWord);
+            return siteIndex > -1;
+        });
     }
-    clearTimeout(filterDataListTimer);
-    clearTimeout(filterHighlightTimer);
-    if (!inputWord) return true;
-    let filterEngineName = "";
-    let filterGroup = false;
-    if (inputWord.indexOf(`【${window.i18n('category')}】`) === 0) {
-        filterGroup = true;
-        inputWord = inputWord.replace(`【${window.i18n('category')}】`, '');
-    }
-    let typeIndex = window.searchData.sitesConfig.findIndex((data, index) => {
-        if (filterGroup) return inputWord === data.type;
-        return data.sites.findIndex((site, i) => {
-            if (site.name === inputWord || site.url === inputWord) {
-                filterEngineName = site.name;
-                return true;
-            }
-            return false;
-        }) > -1;
-    });
     if (typeIndex > -1) {
-        if (filterGroup) return typeIndex;
-        filterHighlightTimer = setInterval(() => {
-            [].every.call(document.querySelectorAll(".site-icon"), icon => {
-                if (icon.childNodes[1].title === filterEngineName) {
-                    icon.classList.add("filter");
-                    icon.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
-                    clearTimeout(filterHighlightTimer);
-                    return false;
-                }
-                return true;
-            });
-        }, 500);
+        if (siteIndex < 0) return typeIndex;
+        filterHighlightFrame = requestAnimationFrame(() => {
+            const icon = document.getElementById(`engine-tabpanel-${typeIndex}`)?.querySelectorAll('.site-icon')[siteIndex];
+            locateResult(icon);
+        });
         return typeIndex;
     }
     return false;
@@ -1635,11 +1627,13 @@ export default function Engines() {
       createData('paste', window.i18n('param_paste')),
       createData('showTips', window.i18n('param_showTips')),
       createData('find', window.i18n('param_find')),
-      createData('find.addto()', window.i18n('param_findadd')),
-      createData('javascript', window.i18n('javascript'))
+      createData('find.addto()', window.i18n('param_findadd'))      
     ];
-    if (/^(http|ftp)/i.test(window.location.protocol) && window.lang.indexOf("zh") === 0) {
-        rows.splice(4, 0, createData('%ss', window.i18n('param_ss')), createData('%st', window.i18n('param_st')));
+    if (/^(http|ftp)/i.test(window.location.protocol)) {
+        if (window.lang.indexOf("zh") === 0) {
+            rows.splice(4, 0, createData('%ss', window.i18n('param_ss')), createData('%st', window.i18n('param_st')));
+        }
+        rows.push(createData('javascript', window.i18n('javascript')));
     }
     let selectTxt = -1, selectImg = -1, selectLink = -1, selectPage = -1, selectAll = -1;
     for (let i = 0; i < window.searchData.sitesConfig.length; i++) {
@@ -1671,6 +1665,17 @@ export default function Engines() {
         if (selectPage === -1) selectPage = selectAll;
     }
     const [value, setValue] = React.useState(0);
+    const [filterWord, setFilterWord] = React.useState('');
+    const filterKeyword = filterWord.toLowerCase();
+    const filterResults = filterKeyword ? window.searchData.sitesConfig.flatMap((data, typeIndex) => [
+        {label: `【${window.i18n('category')}】${data.type}`, searchText: data.type, typeIndex, siteIndex: -1},
+        ...data.sites.map((site, siteIndex) => ({
+            label: site.name,
+            searchText: `${site.name}\n${site.url.length < 1000 ? site.url : ''}`,
+            typeIndex,
+            siteIndex
+        }))
+    ]).filter(option => option.searchText.toLowerCase().includes(filterKeyword)).slice(0, 10) : [];
 
     const [editTypeOpen, setTypeOpen] = React.useState(false);
     const [editTypeData, setTypeData] = React.useState(typeObject(false));
@@ -1961,9 +1966,9 @@ export default function Engines() {
                                 onDragLeave={e => {hideDragLine()}}
                                 icon={
                                     /^(http|data:)/.test(data.icon)?(
-                                        <img alt={data.type} src={data.icon} style={{m:1, background: 'darkgray', borderRadius: '35px', width: '65px', height: '65px', padding: '15px', boxSizing: 'border-box'}} />
+                                        <img alt={data.type} src={(/^http/.test(data.icon) && window.cacheIcon[data.icon]) || data.icon} style={{m:1, background: 'var(--group-icon-bg)', borderRadius: '35px', width: '65px', height: '65px', padding: '15px', boxSizing: 'border-box', overflow: 'hidden'}} />
                                     ):(
-                                        <i style={{background: 'darkgray', lineHeight: '65px', width: '65px', height: '65px', fontSize: '30px', color: 'white', borderRadius: '35px'}} className={`${/^fa/.test(data.icon) ? data.icon : "fa fa-" + data.icon}`}>{data.icon ? '' : data.type}</i>
+                                        <i style={{background: 'var(--group-icon-bg)', lineHeight: '65px', width: '65px', height: '65px', fontSize: '30px', color: 'white', borderRadius: '35px', overflow: 'hidden'}} className={`${/^fa/.test(data.icon) ? data.icon : "fa fa-" + data.icon}`}>{data.icon ? '' : data.type}</i>
                                     )} 
                                 label={data.type.slice(0, 10)} 
                                 title={data.description || data.type}
@@ -2013,66 +2018,32 @@ export default function Engines() {
                 </MuiAlert>
             </Snackbar>
             <Box sx={{ mt:1, textAlign:'center', whiteSpace:'nowrap'}}>
-                <input placeholder={window.i18n('filterEngine')} className={'filterEngine'} list="filterlist"
-                    onChange={e => {
-                        clearTimeout(filterDataListTimer);
-                        clearTimeout(filterHighlightTimer);
-                        filterDataListTimer = setTimeout(() => {
-                            let list = e.target.list;
-                            let inputWord = e.target.value, inputWordLc;
-                            [].find.call(list.children, option => {
-                                if(option.value === inputWord) {
-                                    let typeIndex = forwordToSite(inputWord);
-                                    if (typeIndex !== false) {
-                                        setValue(typeIndex);
-                                    }
-                                    return true;
-                                }
-                                return false;
-                            });
-                            list.innerHTML = "";
-                            if (inputWord) inputWordLc = inputWord.toLowerCase();
-                            else return;
-                            window.searchData.sitesConfig.every((data, index) => {
-                                if (data.type.toLowerCase().indexOf(inputWordLc) !== -1) {
-                                    if (`【${window.i18n('category')}】` + data.type !== inputWord) {
-                                        let option = document.createElement('option');
-                                        option.value = `【${window.i18n('category')}】` + data.type;
-                                        list.appendChild(option);
-                                    }
-                                }
-                                return data.sites.every((site, i) => {
-                                    if (site.name.toLowerCase().indexOf(inputWordLc) !== -1) {
-                                        if (site.name !== inputWord) {
-                                            let option = document.createElement('option');
-                                            option.value = site.name;
-                                            list.appendChild(option);
-                                        }
-                                    } else if (site.url.indexOf(inputWordLc) !== -1) {
-                                        if (site.url !== inputWord) {
-                                            let option = document.createElement('option');
-                                            option.value = site.url;
-                                            list.appendChild(option);
-                                        }
-                                    }
-                                    return list.children.length < 10;
-                                });
-                            });
-                        }, 500);
+                <Autocomplete
+                    freeSolo
+                    autoHighlight
+                    size="small"
+                    value={null}
+                    inputValue={filterWord}
+                    onInputChange={(event, inputWord) => setFilterWord(inputWord)}
+                    options={filterResults}
+                    filterOptions={options => options}
+                    getOptionLabel={option => typeof option === 'string' ? option : option.label}
+                    renderOption={(props, option) => <li {...props} key={`${option.typeIndex}-${option.siteIndex}`}>{option.label}</li>}
+                    onChange={(event, option) => {
+                        const target = typeof option === 'string' ? filterResults[0] : option;
+                        if (!target) return;
+                        setFilterWord(target.label);
+                        const typeIndex = forwordToSite(target);
+                        if (typeIndex !== false) setValue(typeIndex);
                     }}
-                    onKeyDown={e => {
-                        if (e.key === 'Enter' && e.target.value) {
-                            let inputWord = e.target.value;
-                            let typeIndex = forwordToSite(inputWord);
-                            if (typeIndex !== false) {
-                                setValue(typeIndex);
-                                let list = e.target.list;
-                                if (list) list.innerHTML = "";
-                            }
-                        }
-                    }}
+                    sx={{display: 'inline-flex', verticalAlign: 'middle', width: 180, mx: 1, textAlign: 'left',
+                        '&:focus-within': {width: '90%', '& ~ button': {display: 'none'}}}}
+                    renderInput={params => <TextField {...params}
+                        placeholder={window.i18n('filterEngine')}
+                        inputProps={{...params.inputProps, 'aria-label': window.i18n('filterEngine')}}
+                        InputProps={{...params.InputProps, startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small"/></InputAdornment>}}
+                    />}
                 />
-                <SearchIcon/>
                 <Button variant="contained" id="verifyBtn" title={window.i18n('verifyBtn')} endIcon={<DomainVerificationIcon sx={{mr: '-4px', mt: '-2px'}}/>}
                     onClick={() => {
                         verifyArray = [];
@@ -2098,7 +2069,6 @@ export default function Engines() {
                         }
                     }}
                 ></Button>
-                <datalist id="filterlist"></datalist>
             </Box>
             <Paper sx={{ pt: 1, pb: 2, boxShadow: 'unset', textAlign:'center', borderRadius:'3px', overflow: 'auto', whiteSpace: 'nowrap' }}>
                 <span
